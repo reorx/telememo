@@ -14,7 +14,7 @@ from peewee import (
     TextField,
 )
 
-from .types import ChannelInfo, MessageData
+from .types import ChannelInfo, MessageData, CommentData
 
 # Database instance (will be initialized later)
 db = SqliteDatabase(None)
@@ -70,11 +70,36 @@ class Message(BaseModel):
         )
 
 
+class Comment(BaseModel):
+    """Comment model for channel message comments/replies."""
+
+    id = IntegerField()
+    parent_message_id = IntegerField(index=True)
+    parent_channel = ForeignKeyField(Channel, backref="comments", on_delete="CASCADE")
+    discussion_group_id = IntegerField()
+    text = TextField(null=True, index=True)
+    date = DateTimeField(index=True)
+    sender_id = IntegerField(null=True)
+    sender_name = CharField(null=True)
+    is_edited = BooleanField(default=False)
+    edit_date = DateTimeField(null=True)
+    is_reply_to_comment = BooleanField(default=False)
+    reply_to_comment_id = IntegerField(null=True)
+    created_at = DateTimeField(default=datetime.now)
+
+    class Meta:
+        table_name = "comments"
+        primary_key = False
+        indexes = (
+            (("parent_channel", "parent_message_id", "id"), True),  # Unique constraint
+        )
+
+
 def init_db(db_path: str) -> None:
     """Initialize database connection and create tables."""
     db.init(db_path)
     db.connect()
-    db.create_tables([Channel, Message])
+    db.create_tables([Channel, Message, Comment])
 
 
 def close_db() -> None:
@@ -191,3 +216,77 @@ def get_latest_messages(channel_id: int, limit: int = 10) -> List[Message]:
 def get_message_count(channel_id: int) -> int:
     """Get total message count for a channel."""
     return Message.select().where(Message.channel == channel_id).count()
+
+
+def save_comment(comment_data: CommentData) -> Comment:
+    """Save or update a comment."""
+    comment, created = Comment.get_or_create(
+        parent_channel=comment_data.parent_channel_id,
+        parent_message_id=comment_data.parent_message_id,
+        id=comment_data.id,
+        defaults={
+            "discussion_group_id": comment_data.discussion_group_id,
+            "text": comment_data.text,
+            "date": comment_data.date,
+            "sender_id": comment_data.sender_id,
+            "sender_name": comment_data.sender_name,
+            "is_edited": comment_data.is_edited,
+            "edit_date": comment_data.edit_date,
+            "is_reply_to_comment": comment_data.is_reply_to_comment,
+            "reply_to_comment_id": comment_data.reply_to_comment_id,
+        },
+    )
+    if not created:
+        # Update comment if it already exists (e.g., edited comment)
+        comment.text = comment_data.text
+        comment.is_edited = comment_data.is_edited
+        comment.edit_date = comment_data.edit_date
+        comment.save()
+    return comment
+
+
+def save_comments_batch(comments: List[CommentData]) -> int:
+    """Save multiple comments in a batch."""
+    count = 0
+    with db.atomic():
+        for comment_data in comments:
+            save_comment(comment_data)
+            count += 1
+    return count
+
+
+def get_comments_for_message(channel_id: int, message_id: int) -> List[Comment]:
+    """Get all comments for a specific message."""
+    return list(
+        Comment.select()
+        .where(
+            (Comment.parent_channel == channel_id) &
+            (Comment.parent_message_id == message_id)
+        )
+        .order_by(Comment.date.asc())
+    )
+
+
+def search_comments(query: str, channel_id: Optional[int] = None, limit: int = 50) -> List[Comment]:
+    """Search comments by text content."""
+    q = Comment.select().where(Comment.text.contains(query))
+    if channel_id:
+        q = q.where(Comment.parent_channel == channel_id)
+    return list(q.order_by(Comment.date.desc()).limit(limit))
+
+
+def get_messages_with_replies(channel_id: int) -> List[Message]:
+    """Get all messages that have replies (comments)."""
+    return list(
+        Message.select()
+        .where(
+            (Message.channel == channel_id) &
+            (Message.replies > 0)
+        )
+        .order_by(Message.id.asc())
+    )
+
+
+def get_comment_count(channel_id: int) -> int:
+    """Get total comment count for a channel."""
+    return Comment.select().where(Comment.parent_channel == channel_id).count()

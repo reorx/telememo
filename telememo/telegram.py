@@ -4,11 +4,13 @@ from datetime import datetime
 from typing import AsyncIterator, List, Optional, Union
 
 from telethon import TelegramClient as TelethonClient
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetDiscussionMessageRequest, GetRepliesRequest
 from telethon.tl.types import Channel as TgChannel
 from telethon.tl.types import Message as TgMessage
 from telethon.tl.types import User
 
-from .types import ChannelInfo, MessageData
+from .types import ChannelInfo, MessageData, CommentData
 
 
 class TelegramClient:
@@ -202,6 +204,181 @@ class TelegramClient:
             edit_date=message.edit_date,
             media_type=media_type,
             has_media=has_media,
+        )
+
+    async def get_discussion_group(self, channel: Union[str, int]) -> Optional[int]:
+        """Get the linked discussion group ID for a channel.
+
+        Args:
+            channel: Channel username or ID
+
+        Returns:
+            Discussion group ID or None if not linked
+        """
+        entity = await self.client.get_entity(channel)
+        # Get full channel information using GetFullChannelRequest
+        full_channel = await self.client(GetFullChannelRequest(entity))
+        if hasattr(full_channel, "full_chat") and hasattr(full_channel.full_chat, "linked_chat_id"):
+            linked_chat_id = full_channel.full_chat.linked_chat_id
+            if linked_chat_id:
+                return linked_chat_id
+        return None
+
+    async def get_comments(
+        self,
+        channel: Union[str, int],
+        message_id: int,
+        limit: Optional[int] = None,
+    ) -> AsyncIterator[CommentData]:
+        """Get comments for a specific message.
+
+        Args:
+            channel: Channel username or ID
+            message_id: Message ID to get comments for
+            limit: Maximum number of comments to retrieve (None for all)
+
+        Yields:
+            CommentData objects
+        """
+        # Get channel entity
+        entity = await self.client.get_entity(channel)
+        channel_id = entity.id
+
+        # Get the original message to check if it has replies
+        original_message = await self.client.get_messages(channel, ids=message_id)
+        if not original_message or not original_message.replies:
+            # No replies on this message
+            return
+
+        if not original_message.replies.channel_id:
+            # Replies exist but no discussion group channel
+            return
+
+        discussion_group_id = original_message.replies.channel_id
+
+        # Get the discussion message (the linked message in the discussion group)
+        try:
+            discussion_msg_result = await self.client(GetDiscussionMessageRequest(
+                peer=entity,
+                msg_id=message_id
+            ))
+        except Exception:
+            # Unable to get discussion message
+            return
+
+        if not discussion_msg_result.messages:
+            return
+
+        linked_message = discussion_msg_result.messages[0]
+        linked_message_id = linked_message.id
+
+        # Fetch comments using GetRepliesRequest with pagination
+        offset_id = 0
+        batch_limit = 100
+        total_fetched = 0
+
+        while True:
+            # Calculate how many to fetch in this batch
+            if limit:
+                remaining = limit - total_fetched
+                if remaining <= 0:
+                    break
+                current_limit = min(batch_limit, remaining)
+            else:
+                current_limit = batch_limit
+
+            # Fetch replies
+            try:
+                replies_result = await self.client(GetRepliesRequest(
+                    peer=discussion_group_id,
+                    msg_id=linked_message_id,
+                    offset_id=offset_id,
+                    offset_date=None,
+                    add_offset=0,
+                    limit=current_limit,
+                    max_id=0,
+                    min_id=0,
+                    hash=0
+                ))
+            except Exception:
+                # Error fetching replies
+                break
+
+            if not replies_result.messages:
+                break
+
+            # Convert and yield each comment
+            for reply_msg in replies_result.messages:
+                comment_data = await self._convert_message_to_comment(
+                    reply_msg, message_id, channel_id, discussion_group_id
+                )
+                yield comment_data
+                total_fetched += 1
+
+            # Update offset for next batch
+            offset_id = replies_result.messages[-1].id
+
+            # Check if we've fetched all messages
+            if len(replies_result.messages) < current_limit:
+                break
+
+    async def _convert_message_to_comment(
+        self, message: TgMessage, parent_message_id: int, parent_channel_id: int, discussion_group_id: int
+    ) -> CommentData:
+        """Convert Telegram message to CommentData.
+
+        Args:
+            message: Telegram message object (comment)
+            parent_message_id: Parent message ID
+            parent_channel_id: Parent channel ID
+            discussion_group_id: Discussion group ID
+
+        Returns:
+            CommentData object
+        """
+        # Get sender information
+        sender_id = message.sender_id
+        sender_name = None
+        if message.sender:
+            if isinstance(message.sender, User):
+                parts = []
+                if message.sender.first_name:
+                    parts.append(message.sender.first_name)
+                if message.sender.last_name:
+                    parts.append(message.sender.last_name)
+                sender_name = " ".join(parts) if parts else message.sender.username
+            elif hasattr(message.sender, "title"):
+                sender_name = message.sender.title
+
+        # Check if this comment is a reply to another comment
+        is_reply_to_comment = False
+        reply_to_comment_id = None
+        if message.reply_to and hasattr(message.reply_to, "reply_to_msg_id"):
+            # If reply_to_msg_id is different from parent_message_id, it's a reply to another comment
+            if message.reply_to.reply_to_msg_id != parent_message_id:
+                is_reply_to_comment = True
+                reply_to_comment_id = message.reply_to.reply_to_msg_id
+
+        # Get message text - use message.message attribute for raw text
+        text = None
+        if hasattr(message, 'message') and message.message:
+            text = message.message
+        elif hasattr(message, 'text') and message.text:
+            text = message.text
+
+        return CommentData(
+            id=message.id,
+            parent_message_id=parent_message_id,
+            parent_channel_id=parent_channel_id,
+            discussion_group_id=discussion_group_id,
+            text=text,
+            date=message.date,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            is_edited=message.edit_date is not None,
+            edit_date=message.edit_date,
+            is_reply_to_comment=is_reply_to_comment,
+            reply_to_comment_id=reply_to_comment_id,
         )
 
     async def __aenter__(self):

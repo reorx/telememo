@@ -43,3 +43,20 @@ class MessageData(BaseModel):
     edit_date: Optional[datetime] = Field(default=None, description="Last edit date")
     media_type: Optional[str] = Field(default=None, description="Type of media (photo, video, etc)")
     has_media: bool = Field(default=False, description="Whether message has media")
+
+
+class CommentData(BaseModel):
+    """Telegram comment/reply data."""
+
+    id: int = Field(description="Comment message ID")
+    parent_message_id: int = Field(description="Parent message ID this comment belongs to")
+    parent_channel_id: int = Field(description="Parent channel ID")
+    discussion_group_id: int = Field(description="Discussion group ID where comment is stored")
+    text: Optional[str] = Field(default=None, description="Comment text content")
+    date: datetime = Field(description="Comment date")
+    sender_id: Optional[int] = Field(default=None, description="Sender user/channel ID")
+    sender_name: Optional[str] = Field(default=None, description="Sender name")
+    is_edited: bool = Field(default=False, description="Whether comment was edited")
+    edit_date: Optional[datetime] = Field(default=None, description="Last edit date")
+    is_reply_to_comment: bool = Field(default=False, description="Whether this is a reply to another comment")
+    reply_to_comment_id: Optional[int] = Field(default=None, description="ID of comment this is replying to")
