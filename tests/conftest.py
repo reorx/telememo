@@ -45,7 +45,7 @@ def test_config(test_db):
         api_hash=api_hash,
         phone=os.getenv("PHONE"),  # Optional phone number
         db_path=test_db,
-        session_name="test_session",
+        # Use default session_name ("telememo_session") to reuse CLI's authenticated session
     )
 
 

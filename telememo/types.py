@@ -43,9 +43,3 @@ class MessageData(BaseModel):
     edit_date: Optional[datetime] = Field(default=None, description="Last edit date")
     media_type: Optional[str] = Field(default=None, description="Type of media (photo, video, etc)")
     has_media: bool = Field(default=False, description="Whether message has media")
-
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat(),
-        }
-    )
