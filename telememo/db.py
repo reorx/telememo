@@ -220,29 +220,47 @@ def get_message_count(channel_id: int) -> int:
 
 def save_comment(comment_data: CommentData) -> Comment:
     """Save or update a comment."""
-    comment, created = Comment.get_or_create(
-        parent_channel=comment_data.parent_channel_id,
-        parent_message_id=comment_data.parent_message_id,
-        id=comment_data.id,
-        defaults={
-            "discussion_group_id": comment_data.discussion_group_id,
-            "text": comment_data.text,
-            "date": comment_data.date,
-            "sender_id": comment_data.sender_id,
-            "sender_name": comment_data.sender_name,
-            "is_edited": comment_data.is_edited,
-            "edit_date": comment_data.edit_date,
-            "is_reply_to_comment": comment_data.is_reply_to_comment,
-            "reply_to_comment_id": comment_data.reply_to_comment_id,
-        },
-    )
-    if not created:
-        # Update comment if it already exists (e.g., edited comment)
+    try:
+        # Try to get existing comment
+        comment = Comment.get(
+            (Comment.parent_channel == comment_data.parent_channel_id) &
+            (Comment.parent_message_id == comment_data.parent_message_id) &
+            (Comment.id == comment_data.id)
+        )
+        # Update existing comment using UPDATE query
+        Comment.update(
+            text=comment_data.text,
+            is_edited=comment_data.is_edited,
+            edit_date=comment_data.edit_date,
+            discussion_group_id=comment_data.discussion_group_id
+        ).where(
+            (Comment.parent_channel == comment_data.parent_channel_id) &
+            (Comment.parent_message_id == comment_data.parent_message_id) &
+            (Comment.id == comment_data.id)
+        ).execute()
+        # Refresh the comment object
         comment.text = comment_data.text
         comment.is_edited = comment_data.is_edited
         comment.edit_date = comment_data.edit_date
-        comment.save()
-    return comment
+        comment.discussion_group_id = comment_data.discussion_group_id
+        return comment
+    except Comment.DoesNotExist:
+        # Create new comment
+        comment = Comment.create(
+            id=comment_data.id,
+            parent_message_id=comment_data.parent_message_id,
+            parent_channel=comment_data.parent_channel_id,
+            discussion_group_id=comment_data.discussion_group_id,
+            text=comment_data.text,
+            date=comment_data.date,
+            sender_id=comment_data.sender_id,
+            sender_name=comment_data.sender_name,
+            is_edited=comment_data.is_edited,
+            edit_date=comment_data.edit_date,
+            is_reply_to_comment=comment_data.is_reply_to_comment,
+            reply_to_comment_id=comment_data.reply_to_comment_id,
+        )
+        return comment
 
 
 def save_comments_batch(comments: List[CommentData]) -> int:
@@ -275,16 +293,29 @@ def search_comments(query: str, channel_id: Optional[int] = None, limit: int = 5
     return list(q.order_by(Comment.date.desc()).limit(limit))
 
 
-def get_messages_with_replies(channel_id: int) -> List[Message]:
-    """Get all messages that have replies (comments)."""
-    return list(
+def get_messages_with_replies(channel_id: int, limit: Optional[int] = None) -> List[Message]:
+    """Get messages that have replies (comments).
+
+    Args:
+        channel_id: Channel ID
+        limit: Maximum number of messages to return (most recent first)
+
+    Returns:
+        List of messages ordered by message ID descending (most recent first)
+    """
+    query = (
         Message.select()
         .where(
             (Message.channel == channel_id) &
             (Message.replies > 0)
         )
-        .order_by(Message.id.asc())
+        .order_by(Message.id.desc())
     )
+
+    if limit:
+        query = query.limit(limit)
+
+    return list(query)
 
 
 def get_comment_count(channel_id: int) -> int:

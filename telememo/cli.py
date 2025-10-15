@@ -117,15 +117,18 @@ def sync(ctx, channel: str):
 
 @cli.command(name="dump-comments")
 @click.argument("channel")
-@click.option("--limit", type=int, help="Maximum number of messages to fetch comments for")
+@click.option("--limit", type=int, help="Number of most recent messages (with comments) to process")
 @click.pass_context
 def dump_comments(ctx, channel: str, limit: int):
     """Dump comments for channel messages.
 
     CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
 
-    This command fetches comments (discussion group messages) for channel posts
-    that have replies. The channel must be dumped first using the 'dump' command.
+    This command fetches comments for channel posts that have replies.
+    The channel must be dumped first using the 'dump' command.
+
+    Use --limit to process only the most recent N messages with comments.
+    For example, --limit 10 will dump comments for the last 10 messages that have comments.
     """
     config = ctx.obj["config"]
 
@@ -146,29 +149,29 @@ def dump_comments(ctx, channel: str, limit: int):
             await scraper.stop()
             return
 
-        # Get count of messages with replies
-        messages_with_replies = db.get_messages_with_replies(db_channel.id)
+        # Get count of messages with replies (limited if specified)
+        messages_with_replies = db.get_messages_with_replies(db_channel.id, limit=limit)
         if not messages_with_replies:
             click.echo(f"No messages with comments found in {channel_info.title}")
             await scraper.stop()
             return
 
         total_messages = len(messages_with_replies)
-        if limit and limit < total_messages:
-            total_messages = limit
 
         click.echo(f"Channel: {channel_info.title} (@{channel_info.username})")
-        click.echo(f"Messages with comments: {total_messages}")
-        click.echo(f"\nDumping comments from {channel_info.title}...")
+        if limit:
+            click.echo(f"Processing last {total_messages} messages with comments")
+        else:
+            click.echo(f"Processing all {total_messages} messages with comments")
+        click.echo(f"\nDumping comments from {channel_info.title}...\n")
 
-        with click.progressbar(length=total_messages, label="Messages processed") as bar:
-            last_count = [0]
+        last_count = [0]
 
-            def progress_callback(current, total):
-                bar.update(current - last_count[0])
-                last_count[0] = current
+        def progress_callback(current, total, message_id, comment_count):
+            click.echo(f"  [{current}/{total}] Message ID: {message_id} - {comment_count} comments")
+            last_count[0] = current
 
-            count = await scraper.dump_comments(channel, limit=limit, progress_callback=progress_callback)
+        count = await scraper.dump_comments(channel, limit=limit, progress_callback=progress_callback)
 
         click.echo(f"\n✓ Successfully dumped {count} comments")
         await scraper.stop()

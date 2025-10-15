@@ -199,14 +199,14 @@ class Scraper:
         self,
         channel: Union[str, int],
         limit: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> int:
         """Dump comments for messages that have replies.
 
         Args:
             channel: Channel username or ID
-            limit: Maximum number of messages to fetch comments for (None for all)
-            progress_callback: Optional callback function(current, total) for progress updates
+            limit: Number of most recent messages (with replies) to process (None for all)
+            progress_callback: Optional callback function(processed_messages, total_messages, message_id, comment_count)
 
         Returns:
             Number of comments dumped
@@ -229,14 +229,10 @@ class Scraper:
                 "Comments are not available for this channel."
             )
 
-        # Get messages with replies
-        messages_with_replies = db.get_messages_with_replies(db_channel.id)
+        # Get messages with replies (most recent first if limit is specified)
+        messages_with_replies = db.get_messages_with_replies(db_channel.id, limit=limit)
         if not messages_with_replies:
             return 0
-
-        # Apply limit if specified
-        if limit:
-            messages_with_replies = messages_with_replies[:limit]
 
         total_messages = len(messages_with_replies)
         total_comments = 0
@@ -246,10 +242,12 @@ class Scraper:
         for message in messages_with_replies:
             batch = []
             batch_size = 100
+            message_comment_count = 0
 
             async for comment_data in self.telegram.get_comments(channel, message.id):
                 batch.append(comment_data)
                 total_comments += 1
+                message_comment_count += 1
 
                 # Save batch when it reaches batch_size
                 if len(batch) >= batch_size:
@@ -262,9 +260,9 @@ class Scraper:
 
             processed_messages += 1
 
-            # Report progress
+            # Report progress with message details
             if progress_callback:
-                progress_callback(processed_messages, total_messages)
+                progress_callback(processed_messages, total_messages, message.id, message_comment_count)
 
         return total_comments
 
