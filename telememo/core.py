@@ -103,57 +103,101 @@ class Scraper:
     async def sync_messages(
         self,
         channel: Union[str, int],
-        progress_callback: Optional[Callable[[int], None]] = None,
-    ) -> int:
-        """Sync new messages from a channel since last sync.
+        skip_comments: bool = False,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> tuple[int, int]:
+        """Sync new messages from a channel since last sync, optionally including comments.
 
         Args:
             channel: Channel username or ID
-            progress_callback: Optional callback function(new_messages) for progress updates
+            skip_comments: If True, only sync messages without fetching comments
+            progress_callback: Optional callback function(phase, current, total) for progress updates
+                             phase can be "messages" or "comments"
 
         Returns:
-            Number of new messages synced
+            Tuple of (message_count, comment_count)
         """
         # Get channel info
         channel_info = await self.telegram.get_channel_info(channel)
         db_channel = db.get_channel(channel_info.id)
 
         if not db_channel:
-            # Channel not in database, do full dump
-            return await self.dump_channel(channel, progress_callback=progress_callback)
+            # Channel not in database, do full dump (messages only)
+            message_count = await self.dump_channel(channel)
+            return (message_count, 0)
 
         # Get messages since last sync
         min_id = db_channel.last_sync_message_id
-        count = 0
+        message_count = 0
         batch = []
         batch_size = 100
+        new_messages = []  # Track new messages for comment fetching
 
         async for message_data in self.telegram.get_messages(channel, min_id=min_id):
             batch.append(message_data)
-            count += 1
+            new_messages.append(message_data)
+            message_count += 1
 
             # Save batch when it reaches batch_size
             if len(batch) >= batch_size:
                 db.save_messages_batch(batch)
                 batch.clear()
 
-                # Report progress
+                # Report progress for message phase
                 if progress_callback:
-                    progress_callback(count)
+                    progress_callback("messages", message_count, message_count)
 
         # Save remaining messages in batch
         if batch:
             db.save_messages_batch(batch)
             if progress_callback:
-                progress_callback(count)
+                progress_callback("messages", message_count, message_count)
 
         # Update channel sync status
-        if count > 0:
+        if message_count > 0:
             latest_messages = db.get_latest_messages(db_channel.id, limit=1)
             if latest_messages:
                 db.update_channel_sync_status(db_channel.id, latest_messages[0].id)
 
-        return count
+        # Phase 2: Fetch comments for new messages with replies
+        comment_count = 0
+        if not skip_comments and message_count > 0:
+            # Filter messages that have replies
+            messages_with_replies = [msg for msg in new_messages if msg.replies and msg.replies > 0]
+
+            if messages_with_replies:
+                # Check if channel has a discussion group
+                discussion_group_id = await self.telegram.get_discussion_group(channel)
+
+                if discussion_group_id:
+                    total_messages_with_replies = len(messages_with_replies)
+                    processed_count = 0
+
+                    # Fetch comments for each message
+                    for message_data in messages_with_replies:
+                        comment_batch = []
+                        comment_batch_size = 100
+
+                        async for comment_data in self.telegram.get_comments(channel, message_data.id):
+                            comment_batch.append(comment_data)
+                            comment_count += 1
+
+                            # Save batch when it reaches batch_size
+                            if len(comment_batch) >= comment_batch_size:
+                                db.save_comments_batch(comment_batch)
+                                comment_batch.clear()
+
+                        # Save remaining comments in batch
+                        if comment_batch:
+                            db.save_comments_batch(comment_batch)
+
+                        processed_count += 1
+
+                        # Report progress for comment phase
+                        if progress_callback:
+                            progress_callback("comments", processed_count, total_messages_with_replies)
+
+        return (message_count, comment_count)
 
     async def get_latest_messages(self, channel: Union[str, int], limit: int = 3):
         """Get the latest messages from a channel (for testing).

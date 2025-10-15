@@ -86,11 +86,15 @@ def dump(ctx, channel: str, limit: int):
 
 @cli.command()
 @click.argument("channel")
+@click.option("--skip-comments", is_flag=True, help="Only sync messages, skip fetching comments")
 @click.pass_context
-def sync(ctx, channel: str):
-    """Sync new messages from a channel.
+def sync(ctx, channel: str, skip_comments: bool):
+    """Sync new messages and their comments from a channel.
 
     CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
+
+    By default, this command syncs both new messages and their comments.
+    Use --skip-comments to sync only messages.
     """
     config = ctx.obj["config"]
 
@@ -98,17 +102,42 @@ def sync(ctx, channel: str):
         scraper = Scraper(config)
         await scraper.start()
 
-        click.echo(f"Syncing messages from {channel}...")
+        click.echo(f"Syncing from {channel}...")
 
-        last_count = [0]
+        # Track progress for both phases
+        message_last = [0]
+        comment_last = [0]
+        current_phase = [""]
 
-        def progress_callback(count):
-            if count - last_count[0] >= 10:
-                click.echo(f"  {count} new messages synced...")
-                last_count[0] = count
+        def progress_callback(phase, current, total):
+            if phase == "messages":
+                if current_phase[0] != "messages":
+                    click.echo("\nPhase 1: Syncing new messages...")
+                    current_phase[0] = "messages"
+                if current - message_last[0] >= 10 or current == total:
+                    click.echo(f"  {current} new messages synced...")
+                    message_last[0] = current
+            elif phase == "comments":
+                if current_phase[0] != "comments":
+                    click.echo(f"\nPhase 2: Fetching comments for {total} new message(s) with replies...")
+                    current_phase[0] = "comments"
+                if current != comment_last[0]:
+                    click.echo(f"  Processing message {current}/{total}...")
+                    comment_last[0] = current
 
-        count = await scraper.sync_messages(channel, progress_callback=progress_callback)
-        click.echo(f"✓ Synced {count} new messages")
+        message_count, comment_count = await scraper.sync_messages(
+            channel,
+            skip_comments=skip_comments,
+            progress_callback=progress_callback
+        )
+
+        # Display summary
+        click.echo("\n" + "=" * 50)
+        click.echo("Sync Summary:")
+        click.echo(f"  Messages: {message_count} new")
+        if not skip_comments:
+            click.echo(f"  Comments: {comment_count} new")
+        click.echo("=" * 50)
 
         await scraper.stop()
 
