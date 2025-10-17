@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from . import db
 from .core import Scraper
 from .types import Config
+from .viewer import MessageViewer
 
 # Load environment variables
 load_dotenv()
@@ -434,6 +435,54 @@ def search(ctx, query: str, channel: str, limit: int, target: str, include_comme
             click.echo(f"  {text}")
 
             click.echo()
+
+
+@cli.command()
+@click.argument("channel")
+@click.pass_context
+def viewer(ctx, channel: str):
+    """Launch TUI viewer for browsing messages and comments.
+
+    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
+
+    The viewer provides an interactive interface to browse messages with keyboard navigation:
+    - ↑↓ or j/k: Navigate messages
+    - ←→ or h/l: Navigate pages
+    - Tab: Switch focus between message list and content
+    - Esc or q: Exit viewer
+    """
+    config = ctx.obj["config"]
+
+    # Resolve channel
+    if channel.startswith("@"):
+        channel = channel[1:]
+
+    # Try to find channel by username first
+    db_channel = db.get_channel_by_username(channel)
+
+    # If not found, try as channel ID
+    if not db_channel:
+        try:
+            channel_id = int(channel)
+            db_channel = db.get_channel(channel_id)
+        except ValueError:
+            pass
+
+    if not db_channel:
+        click.echo(f"Channel '{channel}' not found in database.")
+        click.echo("Please run 'telememo dump {channel}' first to download messages.")
+        return
+
+    # Check if channel has messages
+    message_count = db.get_message_count(db_channel.id)
+    if message_count == 0:
+        click.echo(f"No messages found for channel: {db_channel.title}")
+        click.echo(f"Please run 'telememo dump {channel}' first to download messages.")
+        return
+
+    # Launch viewer
+    viewer_app = MessageViewer(db_channel.id)
+    viewer_app.run()
 
 
 if __name__ == "__main__":
