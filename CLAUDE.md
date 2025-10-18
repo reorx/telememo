@@ -81,8 +81,8 @@ Telegram client wrapper using Telethon:
 ### `core.py`
 Business logic coordinating telegram and db modules:
 - `Scraper` class coordinating operations
-- `dump_channel()`: Main function to dump all channel messages
-- `sync_messages()`: Incremental sync for new messages
+- `dump_messages()`: Main function to dump all channel messages
+- `sync_messages_and_comments()`: Incremental sync for new messages
 - Process messages and store in database
 - Handle message updates and edits
 

@@ -35,7 +35,7 @@ async def test_get_channel_info_and_messages(test_config, test_channel):
     print(f"  Username: @{channel_info.username or 'N/A'}")
 
     # Test 2: Fetch 3 latest messages
-    messages = await scraper.get_latest_messages(test_channel, limit=3)
+    messages = await scraper.telegram.get_latest_messages(test_channel, limit=3)
 
     assert messages is not None
     assert len(messages) > 0
@@ -82,7 +82,7 @@ async def test_dump_channel_limited(test_config, test_channel):
     await scraper.start()
 
     # Dump only 5 messages
-    count = await scraper.dump_channel(test_channel, limit=5)
+    count = await scraper.dump_messages(test_channel, limit=5)
 
     assert count > 0
     assert count <= 5
@@ -107,7 +107,7 @@ async def test_search_messages(test_config, test_channel):
     await scraper.start()
 
     # First, dump some messages
-    await scraper.dump_channel(test_channel, limit=10)
+    await scraper.dump_messages(test_channel, limit=10)
 
     # Get channel info
     channel_info = await scraper.get_channel_info(test_channel)

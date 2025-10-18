@@ -190,6 +190,11 @@ class TelegramClient:
         if hasattr(message, "replies") and message.replies:
             replies = message.replies.replies
 
+        # Get grouped_id for media albums
+        grouped_id = None
+        if hasattr(message, "grouped_id"):
+            grouped_id = message.grouped_id
+
         return MessageData(
             id=message.id,
             channel_id=message.peer_id.channel_id,
@@ -204,6 +209,7 @@ class TelegramClient:
             edit_date=message.edit_date,
             media_type=media_type,
             has_media=has_media,
+            grouped_id=grouped_id,
         )
 
     async def get_discussion_group(self, channel: Union[str, int]) -> Optional[int]:

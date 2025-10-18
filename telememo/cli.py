@@ -12,6 +12,7 @@ from .core import Scraper
 from .types import Config
 from .viewer import MessageViewer
 
+
 # Load environment variables
 load_dotenv()
 
@@ -38,106 +39,100 @@ def load_config() -> Config:
 
 
 @click.group()
+@click.option(
+    "--channel-name", "-c",
+    help="Channel username (e.g., @channelname or channelname)"
+)
+@click.option('--debug', '-d', is_flag=True, help='Enable debug mode')
 @click.pass_context
-def cli(ctx):
+def cli(ctx, channel_name: str, debug: bool):
     """Telememo - Telegram channel message dumper to SQLite."""
     # Initialize database
     config = load_config()
     db.init_db(config.db_path)
     ctx.ensure_object(dict)
     ctx.obj["config"] = config
+    if channel_name.startswith("@"):
+        channel_name = channel_name[1:]
+    if not channel_name:
+        click.echo("Error: Channel is required. Use -c/--channel-name to specify a channel.")
+        ctx.exit(1)
+    ctx.obj["channel_name"] = channel_name
+    ctx.obj["debug"] = debug
 
 
 @cli.command()
-@click.argument("channel")
 @click.option("--limit", type=int, help="Maximum number of messages to dump")
 @click.pass_context
-def dump(ctx, channel: str, limit: int):
-    """Dump messages from a channel to the database.
-
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
-    """
+def dump(ctx, limit: int):
+    """Dump messages from a channel to the database."""
     config = ctx.obj["config"]
+    channel_name = ctx.obj.get("channel_name")
 
     async def run_dump():
         scraper = Scraper(config)
         await scraper.start()
 
-        click.echo(f"Fetching channel info for {channel}...")
-        channel_info = await scraper.get_channel_info(channel)
+        click.echo(f"Fetching channel info for {channel_name}...")
+        channel_info = await scraper.get_channel_info(channel_name)
         click.echo(f"Channel: {channel_info.title} (@{channel_info.username})")
         click.echo(f"Members: {channel_info.member_count or 'N/A'}")
 
         click.echo(f"\nDumping messages from {channel_info.title}...")
 
-        with click.progressbar(length=0, label="Messages dumped") as bar:
-            last_count = [0]
+        messages = await scraper.dump_messages(channel_name, limit=limit)
 
-            def progress_callback(current, total):
-                bar.update(current - last_count[0])
-                last_count[0] = current
-
-            count = await scraper.dump_channel(channel, limit=limit, progress_callback=progress_callback)
-
-        click.echo(f"\n✓ Successfully dumped {count} messages")
+        click.echo(f"\n✓ Successfully dumped {len(messages)} messages")
         await scraper.stop()
 
     asyncio.run(run_dump())
 
 
 @cli.command()
-@click.argument("channel")
 @click.option("--skip-comments", is_flag=True, help="Only sync messages, skip fetching comments")
+@click.option("--limit", type=int, help="Maximum number of new messages to sync")
 @click.pass_context
-def sync(ctx, channel: str, skip_comments: bool):
+def sync(ctx, skip_comments: bool, limit: int):
     """Sync new messages and their comments from a channel.
-
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
 
     By default, this command syncs both new messages and their comments.
     Use --skip-comments to sync only messages.
+    Use --limit to sync only the most recent N new messages.
     """
     config = ctx.obj["config"]
+    channel_name = ctx.obj.get("channel_name")
 
     async def run_sync():
         scraper = Scraper(config)
         await scraper.start()
 
-        click.echo(f"Syncing from {channel}...")
+        click.echo(f"Syncing from {channel_name}...")
+
+        # Get or create channel
+        await scraper.get_or_create_channel(channel_name)
+
+        # Get total message count for progress tracking
+        total_messages = await scraper.telegram.get_message_count(channel_name)
+        if limit and limit < total_messages:
+            total_messages = limit
 
         # Track progress for both phases
         message_last = [0]
         comment_last = [0]
         current_phase = [""]
 
-        def progress_callback(phase, current, total):
-            if phase == "messages":
-                if current_phase[0] != "messages":
-                    click.echo("\nPhase 1: Syncing new messages...")
-                    current_phase[0] = "messages"
-                if current - message_last[0] >= 10 or current == total:
-                    click.echo(f"  {current} new messages synced...")
-                    message_last[0] = current
-            elif phase == "comments":
-                if current_phase[0] != "comments":
-                    click.echo(f"\nPhase 2: Fetching comments for {total} new message(s) with replies...")
-                    current_phase[0] = "comments"
-                if current != comment_last[0]:
-                    click.echo(f"  Processing message {current}/{total}...")
-                    comment_last[0] = current
-
-        message_count, comment_count = await scraper.sync_messages(
-            channel,
+        message_count, comment_count = await scraper.sync_messages_and_comments(
+            channel_name,
             skip_comments=skip_comments,
-            progress_callback=progress_callback
+            limit=limit,
         )
 
         # Display summary
         click.echo("\n" + "=" * 50)
         click.echo("Sync Summary:")
-        click.echo(f"  Messages: {message_count} new")
+        click.echo(f"  Messages: {message_count}")
         if not skip_comments:
-            click.echo(f"  Comments: {comment_count} new")
+            click.echo(f"  Comments: {comment_count}")
         click.echo("=" * 50)
 
         await scraper.stop()
@@ -146,13 +141,10 @@ def sync(ctx, channel: str, skip_comments: bool):
 
 
 @cli.command(name="dump-comments")
-@click.argument("channel")
 @click.option("--limit", type=int, help="Number of most recent messages (with comments) to process")
 @click.pass_context
-def dump_comments(ctx, channel: str, limit: int):
+def dump_comments(ctx, limit: int):
     """Dump comments for channel messages.
-
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
 
     This command fetches comments for channel posts that have replies.
     The channel must be dumped first using the 'dump' command.
@@ -161,26 +153,27 @@ def dump_comments(ctx, channel: str, limit: int):
     For example, --limit 10 will dump comments for the last 10 messages that have comments.
     """
     config = ctx.obj["config"]
+    channel_name = ctx.obj.get("channel_name")
 
     async def run_dump_comments():
         scraper = Scraper(config)
         await scraper.start()
 
-        click.echo(f"Fetching channel info for {channel}...")
-        channel_info = await scraper.get_channel_info(channel)
+        click.echo(f"Fetching channel info for {channel_name}...")
+        channel_info = await scraper.get_channel_info(channel_name)
 
         # Check if channel exists in database
-        db_channel = db.get_channel(channel_info.id)
-        if not db_channel:
+        channel = db.get_channel(channel_info.id)
+        if not channel:
             click.echo(
                 f"Error: Channel {channel_info.title} not found in database.\n"
-                f"Please run 'telememo dump {channel}' first to download messages."
+                f"Please run 'telememo dump {channel_name}' first to download messages."
             )
             await scraper.stop()
             return
 
         # Get count of messages with replies (limited if specified)
-        messages_with_replies = db.get_messages_with_replies(db_channel.id, limit=limit)
+        messages_with_replies = db.get_messages_with_replies(channel.id, limit=limit)
         if not messages_with_replies:
             click.echo(f"No messages with comments found in {channel_info.title}")
             await scraper.stop()
@@ -195,42 +188,35 @@ def dump_comments(ctx, channel: str, limit: int):
             click.echo(f"Processing all {total_messages} messages with comments")
         click.echo(f"\nDumping comments from {channel_info.title}...\n")
 
-        last_count = [0]
+        comments = await scraper.dump_comments(channel_name, messages_with_replies)
 
-        def progress_callback(current, total, message_id, comment_count):
-            click.echo(f"  [{current}/{total}] Message ID: {message_id} - {comment_count} comments")
-            last_count[0] = current
-
-        count = await scraper.dump_comments(channel, limit=limit, progress_callback=progress_callback)
-
-        click.echo(f"\n✓ Successfully dumped {count} comments")
+        click.echo(f"\n✓ Successfully dumped {len(comments)} comments")
         await scraper.stop()
 
     asyncio.run(run_dump_comments())
 
 
 @cli.command(name="show-message-comments")
-@click.argument("channel")
 @click.argument("message_id", type=int)
 @click.pass_context
-def show_message_comments(ctx, channel: str, message_id: int):
+def show_message_comments(ctx, message_id: int):
     """Show a message and its comments.
 
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
     MESSAGE_ID is the ID of the message to display with its comments.
 
     This command fetches and displays a message and all its comments without
     saving to the database. Useful for testing and previewing comment content.
     """
     config = ctx.obj["config"]
+    channel_name = ctx.obj.get("channel_name")
 
     async def run_show_message_comments():
         scraper = Scraper(config)
         await scraper.start()
 
         try:
-            click.echo(f"Fetching message {message_id} from {channel}...")
-            message_data, comments = await scraper.get_message_with_comments(channel, message_id)
+            click.echo(f"Fetching message {message_id} from {channel_name}...")
+            message_data, comments = await scraper.get_message_with_comments(channel_name, message_id)
 
             # Display message
             click.echo(f"\n{'=' * 80}")
@@ -283,20 +269,17 @@ def show_message_comments(ctx, channel: str, message_id: int):
 
 
 @cli.command()
-@click.argument("channel")
 @click.pass_context
-def info(ctx, channel: str):
-    """Show channel information.
-
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
-    """
+def info(ctx):
+    """Show channel information."""
     config = ctx.obj["config"]
+    channel_name = ctx.obj.get("channel_name")
 
     async def run_info():
         scraper = Scraper(config)
         await scraper.start()
 
-        channel_info = await scraper.get_channel_info(channel)
+        channel_info = await scraper.get_channel_info(channel_name)
 
         click.echo(f"\nChannel Information:")
         click.echo(f"  Title: {channel_info.title}")
@@ -307,15 +290,15 @@ def info(ctx, channel: str):
             click.echo(f"  Description: {channel_info.description}")
 
         # Check if channel is in database
-        db_channel = db.get_channel(channel_info.id)
-        if db_channel:
-            message_count = db.get_message_count(db_channel.id)
-            comment_count = db.get_comment_count(db_channel.id)
+        channel = db.get_channel(channel_info.id)
+        if channel:
+            message_count = db.get_message_count(channel.id)
+            comment_count = db.get_comment_count(channel.id)
             click.echo(f"\nDatabase Status:")
             click.echo(f"  Messages stored: {message_count}")
             click.echo(f"  Comments stored: {comment_count}")
-            click.echo(f"  Last sync: {db_channel.last_sync_at or 'Never'}")
-            click.echo(f"  Last message ID: {db_channel.last_sync_message_id or 'N/A'}")
+            click.echo(f"  Last sync: {channel.last_sync_at or 'Never'}")
+            click.echo(f"  Last message ID: {channel.last_sync_message_id or 'N/A'}")
         else:
             click.echo(f"\nDatabase Status: Not synced yet")
 
@@ -326,7 +309,6 @@ def info(ctx, channel: str):
 
 @cli.command()
 @click.argument("query")
-@click.option("--channel", help="Limit search to specific channel (username or ID)")
 @click.option("--limit", type=int, default=50, help="Maximum number of results")
 @click.option(
     "--target",
@@ -346,24 +328,24 @@ def search(ctx, query: str, channel: str, limit: int, target: str, include_comme
     QUERY is the search term to look for.
 
     Examples:
-      telememo search "keyword"                    # Search in messages only
-      telememo search "keyword" --target comments  # Search in comments only
-      telememo search "keyword" --target all       # Search in both
-      telememo search "keyword" --include-comments # Show matching messages with their comments
+      telememo -c @channel search "keyword"           # Search in specific channel
+      telememo search "keyword"                       # Search in all channels
+      telememo search "keyword" --target comments     # Search in comments only
+      telememo search "keyword" --target all          # Search in both
+      telememo search "keyword" --include-comments    # Show matching messages with their comments
     """
     config = ctx.obj["config"]
 
+    channel_name = ctx.obj.get("channel_name")
+
     # Resolve channel ID if channel username provided
-    channel_id = None
-    if channel:
-        if channel.startswith("@"):
-            channel = channel[1:]
-        db_channel = db.get_channel_by_username(channel)
-        if db_channel:
-            channel_id = db_channel.id
-        else:
-            click.echo(f"Channel @{channel} not found in database. Run 'dump' first.")
-            return
+    channel = db.get_channel_by_username(channel_name)
+    if not channel:
+        click.echo(f"Channel @{channel_name} not found in database. Run 'dump' first.")
+        ctx.exit(1)
+        return
+
+    channel_id = channel.id
 
     # Search based on target
     message_results = []
@@ -438,12 +420,9 @@ def search(ctx, query: str, channel: str, limit: int, target: str, include_comme
 
 
 @cli.command()
-@click.argument("channel")
 @click.pass_context
-def viewer(ctx, channel: str):
+def viewer(ctx):
     """Launch TUI viewer for browsing messages and comments.
-
-    CHANNEL can be a username (e.g., @channelname or channelname) or channel ID.
 
     The viewer provides an interactive interface to browse messages with keyboard navigation:
     - ↑↓ or j/k: Navigate messages
@@ -452,38 +431,28 @@ def viewer(ctx, channel: str):
     - Esc or q: Exit viewer
     """
     config = ctx.obj["config"]
-
-    # Resolve channel
-    if channel.startswith("@"):
-        channel = channel[1:]
+    channel_name = ctx.obj.get("channel_name")
 
     # Try to find channel by username first
-    db_channel = db.get_channel_by_username(channel)
+    channel = db.get_channel_by_username(channel_name)
 
-    # If not found, try as channel ID
-    if not db_channel:
-        try:
-            channel_id = int(channel)
-            db_channel = db.get_channel(channel_id)
-        except ValueError:
-            pass
-
-    if not db_channel:
-        click.echo(f"Channel '{channel}' not found in database.")
-        click.echo("Please run 'telememo dump {channel}' first to download messages.")
-        return
+    if not channel:
+        click.echo(f"Channel '{channel_name}' not found in database.")
+        click.echo(f"Please run 'telememo dump {channel_name}' first to download messages.")
+        ctx.exit(1)
 
     # Check if channel has messages
-    message_count = db.get_message_count(db_channel.id)
+    message_count = db.get_message_count(channel.id)
     if message_count == 0:
-        click.echo(f"No messages found for channel: {db_channel.title}")
-        click.echo(f"Please run 'telememo dump {channel}' first to download messages.")
-        return
+        click.echo(f"No messages found for channel: {channel.title}")
+        click.echo(f"Please run 'telememo dump {channel_name}' first to download messages.")
+        ctx.exit(1)
 
     # Launch viewer
-    viewer_app = MessageViewer(db_channel.id)
+    viewer_app = MessageViewer(channel.id)
     viewer_app.run()
 
 
 if __name__ == "__main__":
+    cli()
     cli()

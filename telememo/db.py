@@ -4,17 +4,12 @@ from datetime import datetime
 from typing import List, Optional
 
 from peewee import (
-    BooleanField,
-    CharField,
-    DateTimeField,
-    ForeignKeyField,
-    IntegerField,
-    Model,
-    SqliteDatabase,
-    TextField,
+    BooleanField, CharField, DateTimeField, ForeignKeyField, IntegerField, Model, SqliteDatabase,
+    TextField
 )
 
-from .types import ChannelInfo, MessageData, CommentData
+from .types import ChannelInfo, CommentData, MessageData
+
 
 # Database instance (will be initialized later)
 db = SqliteDatabase(None)
@@ -60,6 +55,7 @@ class Message(BaseModel):
     edit_date = DateTimeField(null=True)
     media_type = CharField(null=True)
     has_media = BooleanField(default=False)
+    grouped_id = IntegerField(null=True, index=True)
     created_at = DateTimeField(default=datetime.now)
 
     class Meta:
@@ -147,6 +143,7 @@ def save_message(message_data: MessageData) -> Message:
             "edit_date": message_data.edit_date,
             "media_type": message_data.media_type,
             "has_media": message_data.has_media,
+            "grouped_id": message_data.grouped_id,
         },
     )
     if not created:
@@ -161,14 +158,14 @@ def save_message(message_data: MessageData) -> Message:
     return message
 
 
-def save_messages_batch(messages: List[MessageData]) -> int:
+def save_messages_batch(message_datas: List[MessageData]) -> List[Message]:
     """Save multiple messages in a batch."""
-    count = 0
+    messages = []
     with db.atomic():
-        for message_data in messages:
-            save_message(message_data)
-            count += 1
-    return count
+        for message_data in message_datas:
+            message = save_message(message_data)
+            messages.append(message)
+    return messages
 
 
 def update_channel_sync_status(channel_id: int, last_message_id: int) -> None:

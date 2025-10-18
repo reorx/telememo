@@ -31,86 +31,92 @@ class Scraper:
         """Stop the Telegram client."""
         await self.telegram.disconnect()
 
-    async def get_channel_info(self, channel: Union[str, int]) -> ChannelInfo:
+    async def get_channel_info(self, channel_name: str) -> ChannelInfo:
         """Get channel information from Telegram.
 
         Args:
-            channel: Channel username or ID
+            channel_name: Channel username
 
         Returns:
             ChannelInfo object
         """
-        return await self.telegram.get_channel_info(channel)
+        return await self.telegram.get_channel_info(channel_name)
 
-    async def dump_channel(
+    async def get_or_create_channel(self, channel: Union[str, int]) -> db.Channel:
+        """Get or create a channel in the database."""
+        channel_info = await self.get_channel_info(channel)
+        return db.get_or_create_channel(channel_info)
+
+    async def dump_messages(
         self,
-        channel: Union[str, int],
+        channel_name: str,
+        min_id: Optional[int] = None,
         limit: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
     ) -> int:
-        """Dump all messages from a channel to the database.
+        """Dump messages from a channel to the database.
 
         Args:
-            channel: Channel username or ID
+            channel_name: Channel username
+            min_id: Minimum message ID to dump (None for all)
             limit: Maximum number of messages to dump (None for all)
             progress_callback: Optional callback function(current, total) for progress updates
 
         Returns:
-            Number of messages dumped
+            List of saved messages
         """
-        # Get and store channel info
-        channel_info = await self.telegram.get_channel_info(channel)
-        db_channel = db.get_or_create_channel(channel_info)
-
         # Get total message count for progress tracking
-        total_messages = await self.telegram.get_message_count(channel)
+        total_messages = await self.telegram.get_message_count(channel_name)
         if limit and limit < total_messages:
             total_messages = limit
 
         # Fetch and store messages
-        count = 0
         batch = []
         batch_size = 100
+        messages = []
+        _count = 0
 
-        async for message_data in self.telegram.get_messages(channel, limit=limit):
+        async for message_data in self.telegram.get_messages(channel_name, min_id=min_id, limit=limit):
             batch.append(message_data)
-            count += 1
+            _count += 1
 
             # Save batch when it reaches batch_size
             if len(batch) >= batch_size:
-                db.save_messages_batch(batch)
+                messages.extend(db.save_messages_batch(batch))
                 batch.clear()
 
                 # Report progress
                 if progress_callback:
-                    progress_callback(count, total_messages)
+                    progress_callback(_count)
 
         # Save remaining messages in batch
         if batch:
-            db.save_messages_batch(batch)
+            messages.extend(db.save_messages_batch(batch))
             if progress_callback:
-                progress_callback(count, total_messages)
+                progress_callback(_count)
 
-        # Update channel sync status
-        if count > 0:
-            # Get the latest message to update sync status
-            latest_messages = db.get_latest_messages(db_channel.id, limit=1)
-            if latest_messages:
-                db.update_channel_sync_status(db_channel.id, latest_messages[0].id)
+        return messages
 
-        return count
+    async def update_sync_status(self, channel_name: str):
+        """Update the sync status for a channel."""
+        channel = db.get_channel_by_username(channel_name)
+        latest_messages = await self.telegram.get_latest_messages(channel_name, limit=1)
+        if latest_messages:
+            db.update_channel_sync_status(channel.id, latest_messages[0].id)
 
-    async def sync_messages(
+    async def sync_messages_and_comments(
         self,
-        channel: Union[str, int],
+        channel_name: str,
         skip_comments: bool = False,
+        limit: Optional[int] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> tuple[int, int]:
         """Sync new messages from a channel since last sync, optionally including comments.
 
         Args:
-            channel: Channel username or ID
+            channel_name: Channel username
             skip_comments: If True, only sync messages without fetching comments
+            limit: Maximum number of new messages to sync (None for all)
             progress_callback: Optional callback function(phase, current, total) for progress updates
                              phase can be "messages" or "comments"
 
@@ -118,104 +124,34 @@ class Scraper:
             Tuple of (message_count, comment_count)
         """
         # Get channel info
-        channel_info = await self.telegram.get_channel_info(channel)
-        db_channel = db.get_channel(channel_info.id)
+        channel_info = await self.telegram.get_channel_info(channel_name)
+        channel = db.get_channel(channel_info.id)
 
-        if not db_channel:
-            # Channel not in database, do full dump (messages only)
-            message_count = await self.dump_channel(channel)
-            return (message_count, 0)
+        if channel:
+            min_id = channel.last_sync_message_id
+        else:
+            min_id = None
 
-        # Get messages since last sync
-        min_id = db_channel.last_sync_message_id
-        message_count = 0
-        batch = []
-        batch_size = 100
-        new_messages = []  # Track new messages for comment fetching
-
-        async for message_data in self.telegram.get_messages(channel, min_id=min_id):
-            batch.append(message_data)
-            new_messages.append(message_data)
-            message_count += 1
-
-            # Save batch when it reaches batch_size
-            if len(batch) >= batch_size:
-                db.save_messages_batch(batch)
-                batch.clear()
-
-                # Report progress for message phase
-                if progress_callback:
-                    progress_callback("messages", message_count, message_count)
-
-        # Save remaining messages in batch
-        if batch:
-            db.save_messages_batch(batch)
-            if progress_callback:
-                progress_callback("messages", message_count, message_count)
-
-        # Update channel sync status
-        if message_count > 0:
-            latest_messages = db.get_latest_messages(db_channel.id, limit=1)
-            if latest_messages:
-                db.update_channel_sync_status(db_channel.id, latest_messages[0].id)
+        # Phase 1: Dump messages
+        messages = await self.dump_messages(
+            channel_name,
+            min_id=min_id,
+            limit=limit,
+            progress_callback=progress_callback,
+        )
 
         # Phase 2: Fetch comments for new messages with replies
         comment_count = 0
-        if not skip_comments and message_count > 0:
-            # Filter messages that have replies
-            messages_with_replies = [msg for msg in new_messages if msg.replies and msg.replies > 0]
+        if messages and not skip_comments:
+            comment_count = await self.dump_comments(channel_name, messages, progress_callback=progress_callback)
 
-            if messages_with_replies:
-                # Check if channel has a discussion group
-                discussion_group_id = await self.telegram.get_discussion_group(channel)
+        return (len(messages), comment_count)
 
-                if discussion_group_id:
-                    total_messages_with_replies = len(messages_with_replies)
-                    processed_count = 0
-
-                    # Fetch comments for each message
-                    for message_data in messages_with_replies:
-                        comment_batch = []
-                        comment_batch_size = 100
-
-                        async for comment_data in self.telegram.get_comments(channel, message_data.id):
-                            comment_batch.append(comment_data)
-                            comment_count += 1
-
-                            # Save batch when it reaches batch_size
-                            if len(comment_batch) >= comment_batch_size:
-                                db.save_comments_batch(comment_batch)
-                                comment_batch.clear()
-
-                        # Save remaining comments in batch
-                        if comment_batch:
-                            db.save_comments_batch(comment_batch)
-
-                        processed_count += 1
-
-                        # Report progress for comment phase
-                        if progress_callback:
-                            progress_callback("comments", processed_count, total_messages_with_replies)
-
-        return (message_count, comment_count)
-
-    async def get_latest_messages(self, channel: Union[str, int], limit: int = 3):
-        """Get the latest messages from a channel (for testing).
+    async def get_message_with_comments(self, channel_name: str, message_id: int):
+        """Get a message and its comments without saving to database. For debugging purposes.
 
         Args:
-            channel: Channel username or ID
-            limit: Number of messages to retrieve
-
-        Returns:
-            List of MessageData objects
-        """
-        return await self.telegram.get_latest_messages(channel, limit=limit)
-
-    async def get_message_with_comments(self, channel: Union[str, int], message_id: int):
-        """Get a message and its comments without saving to database.
-
-        Args:
-            channel: Channel username or ID
+            channel_name: Channel username
             message_id: Message ID to fetch comments for
 
         Returns:
@@ -223,15 +159,15 @@ class Scraper:
         """
         # Get the message first
         # When passing a single ID, get_messages returns a single Message object, not a list
-        message = await self.telegram.client.get_messages(channel, ids=message_id)
+        message = await self.telegram.client.get_messages(channel_name, ids=message_id)
         if not message:
-            raise ValueError(f"Message {message_id} not found in channel {channel}")
+            raise ValueError(f"Message {message_id} not found in channel {channel_name}")
 
         message_data = await self.telegram._convert_message_to_data(message)
 
         # Get comments
         comments = []
-        async for comment_data in self.telegram.get_comments(channel, message_id):
+        async for comment_data in self.telegram.get_comments(channel_name, message_id):
             comments.append(comment_data)
 
         # Sort comments by date
@@ -241,42 +177,27 @@ class Scraper:
 
     async def dump_comments(
         self,
-        channel: Union[str, int],
-        limit: Optional[int] = None,
+        channel_name: str,
+        messages_with_replies: list[db.Message],
         progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> int:
         """Dump comments for messages that have replies.
 
         Args:
-            channel: Channel username or ID
+            channel_name: Channel username
             limit: Number of most recent messages (with replies) to process (None for all)
             progress_callback: Optional callback function(processed_messages, total_messages, message_id, comment_count)
 
         Returns:
             Number of comments dumped
         """
-        # Get channel info
-        channel_info = await self.telegram.get_channel_info(channel)
-        db_channel = db.get_channel(channel_info.id)
-
-        if not db_channel:
-            raise ValueError(
-                f"Channel {channel_info.title} not found in database. "
-                "Please run 'dump' command first to download messages."
-            )
-
         # Check if channel has a discussion group
-        discussion_group_id = await self.telegram.get_discussion_group(channel)
+        discussion_group_id = await self.telegram.get_discussion_group(channel_name)
         if not discussion_group_id:
             raise ValueError(
-                f"Channel {channel_info.title} does not have a linked discussion group. "
+                f"Channel {channel_name} does not have a linked discussion group. "
                 "Comments are not available for this channel."
             )
-
-        # Get messages with replies (most recent first if limit is specified)
-        messages_with_replies = db.get_messages_with_replies(db_channel.id, limit=limit)
-        if not messages_with_replies:
-            return 0
 
         total_messages = len(messages_with_replies)
         total_comments = 0
@@ -288,7 +209,7 @@ class Scraper:
             batch_size = 100
             message_comment_count = 0
 
-            async for comment_data in self.telegram.get_comments(channel, message.id):
+            async for comment_data in self.telegram.get_comments(channel_name, message.id):
                 batch.append(comment_data)
                 total_comments += 1
                 message_comment_count += 1

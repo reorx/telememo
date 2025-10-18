@@ -1,0 +1,4 @@
+- [ ] handle forward messages properly
+- [ ] record media_file_count
+- [ ] save media files
+- [ ] use vlm to summarize images

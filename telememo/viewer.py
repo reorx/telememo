@@ -35,6 +35,9 @@ class MessageViewer:
         self.selected_message: Optional[Message] = None
         self.selected_comments: List[Comment] = []
 
+        # Get channel info for building URLs
+        self.channel = db.get_channel(channel_id)
+
         # Load initial data
         self.load_messages()
 
@@ -67,17 +70,21 @@ class MessageViewer:
 
     def build_table(self) -> Table:
         """Build the message table for display."""
+        # Calculate current page items
+        start_idx = self.current_page * self.page_size + 1
+        end_idx = start_idx + len(self.messages) - 1
+
         table = Table(
             show_header=True,
             header_style="bold magenta",
-            title=f"Messages (Page {self.current_page + 1}/{self.get_total_pages()})",
+            title=f"Messages (Page {self.current_page + 1}/{self.get_total_pages()}, Items {start_idx}-{end_idx})",
             title_style="bold cyan",
             show_lines=False,
             expand=True,
         )
 
         table.add_column("ID", style="cyan", width=10, no_wrap=True)
-        table.add_column("Content", style="white", ratio=3)
+        table.add_column("Content", style="white", ratio=3, no_wrap=True)
         table.add_column("Date", style="green", width=20, no_wrap=True)
         table.add_column("Comments", style="yellow", width=10, justify="right")
 
@@ -138,8 +145,11 @@ class MessageViewer:
             date_display = msg.date.strftime('%Y-%m-%d %H:%M:%S')
         lines.append(f"[dim]Date: {date_display}[/]")
 
-        if msg.sender_name:
-            lines.append(f"[dim]From: {msg.sender_name}[/]")
+        # Add message URL
+        if self.channel and self.channel.username:
+            msg_url = f"https://t.me/{self.channel.username}/{msg.id}"
+            lines.append(f"[dim]URL: {msg_url}[/]")
+
         if msg.views:
             lines.append(f"[dim]Views: {msg.views}[/]")
         if msg.is_edited:
