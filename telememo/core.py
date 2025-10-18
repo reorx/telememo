@@ -50,7 +50,7 @@ class Scraper:
     async def dump_messages(
         self,
         channel_name: str,
-        min_id: Optional[int] = None,
+        min_id: int = 0,
         limit: Optional[int] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
     ) -> int:
