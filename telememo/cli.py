@@ -1,13 +1,15 @@
 """Command-line interface for Telememo."""
 
 import asyncio
+import logging
 import os
+import sys
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
-from . import db
+from . import color, db
 from .core import Scraper
 from .types import Config
 from .viewer import MessageViewer
@@ -44,27 +46,33 @@ def load_config() -> Config:
     help="Channel username (e.g., @channelname or channelname)"
 )
 @click.option('--debug', '-d', is_flag=True, help='Enable debug mode')
+@click.option('--reset-db', is_flag=True, help='Reset database')
 @click.pass_context
-def cli(ctx, channel_name: str, debug: bool):
+def cli(ctx, channel_name: str, debug: bool, reset_db: bool):
     """Telememo - Telegram channel message dumper to SQLite."""
     # Initialize database
     config = load_config()
     db.init_db(config.db_path)
     ctx.ensure_object(dict)
     ctx.obj["config"] = config
-    if channel_name.startswith("@"):
+    if channel_name and channel_name.startswith("@"):
         channel_name = channel_name[1:]
     if not channel_name:
         click.echo("Error: Channel is required. Use -c/--channel-name to specify a channel.")
         ctx.exit(1)
     ctx.obj["channel_name"] = channel_name
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
     ctx.obj["debug"] = debug
+    if reset_db:
+        db.delete_db(config.db_path)
+    ctx.obj["reset_db"] = reset_db
 
 
 @cli.command()
-@click.option("--limit", type=int, help="Maximum number of messages to dump")
+@click.option("--limit", '-l', type=int, help="Maximum number of messages to dump")
 @click.pass_context
-def dump(ctx, limit: int):
+def dump_messages(ctx, limit: int):
     """Dump messages from a channel to the database."""
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
@@ -72,6 +80,8 @@ def dump(ctx, limit: int):
     async def run_dump():
         scraper = Scraper(config)
         await scraper.start()
+        # Get or create channel
+        await scraper.get_or_create_channel(channel_name)
 
         click.echo(f"Fetching channel info for {channel_name}...")
         channel_info = await scraper.get_channel_info(channel_name)
@@ -80,7 +90,11 @@ def dump(ctx, limit: int):
 
         click.echo(f"\nDumping messages from {channel_info.title}...")
 
-        messages = await scraper.dump_messages(channel_name, limit=limit)
+        def progress_callback(current: int):
+            echo_static_line(f"[ Processing message {current}]")
+
+        messages = await scraper.dump_messages(channel_name, limit=limit, progress_callback=progress_callback)
+        click.echo()
 
         click.echo(f"\n✓ Successfully dumped {len(messages)} messages")
         await scraper.stop()
@@ -90,7 +104,7 @@ def dump(ctx, limit: int):
 
 @cli.command()
 @click.option("--skip-comments", is_flag=True, help="Only sync messages, skip fetching comments")
-@click.option("--limit", type=int, help="Maximum number of new messages to sync")
+@click.option("--limit", '-l', type=int, help="Maximum number of new messages to sync")
 @click.pass_context
 def sync(ctx, skip_comments: bool, limit: int):
     """Sync new messages and their comments from a channel.
@@ -105,27 +119,31 @@ def sync(ctx, skip_comments: bool, limit: int):
     async def run_sync():
         scraper = Scraper(config)
         await scraper.start()
+        # Get or create channel
+        channel = await scraper.get_or_create_channel(channel_name)
 
         click.echo(f"Syncing from {channel_name}...")
-
-        # Get or create channel
-        await scraper.get_or_create_channel(channel_name)
 
         # Get total message count for progress tracking
         total_messages = await scraper.telegram.get_message_count(channel_name)
         if limit and limit < total_messages:
             total_messages = limit
 
-        # Track progress for both phases
-        message_last = [0]
-        comment_last = [0]
-        current_phase = [""]
+
+        def messages_progress_callback(current: int):
+            echo_static_line(f"[ Processing message {current}]")
+
+        def comments_progress_callback(current: int):
+            echo_static_line(f"[ Processing comment {current}]")
 
         message_count, comment_count = await scraper.sync_messages_and_comments(
             channel_name,
             skip_comments=skip_comments,
             limit=limit,
+            messages_progress_callback=messages_progress_callback,
+            comments_progress_callback=comments_progress_callback,
         )
+        click.echo()
 
         # Display summary
         click.echo("\n" + "=" * 50)
@@ -141,7 +159,7 @@ def sync(ctx, skip_comments: bool, limit: int):
 
 
 @cli.command(name="dump-comments")
-@click.option("--limit", type=int, help="Number of most recent messages (with comments) to process")
+@click.option("--limit", '-l', type=int, help="Number of most recent messages (with comments) to process")
 @click.pass_context
 def dump_comments(ctx, limit: int):
     """Dump comments for channel messages.
@@ -158,37 +176,30 @@ def dump_comments(ctx, limit: int):
     async def run_dump_comments():
         scraper = Scraper(config)
         await scraper.start()
-
-        click.echo(f"Fetching channel info for {channel_name}...")
-        channel_info = await scraper.get_channel_info(channel_name)
-
-        # Check if channel exists in database
-        channel = db.get_channel(channel_info.id)
-        if not channel:
-            click.echo(
-                f"Error: Channel {channel_info.title} not found in database.\n"
-                f"Please run 'telememo dump {channel_name}' first to download messages."
-            )
-            await scraper.stop()
-            return
+        # Get or create channel
+        channel = await scraper.get_or_create_channel(channel_name)
 
         # Get count of messages with replies (limited if specified)
         messages_with_replies = db.get_messages_with_replies(channel.id, limit=limit)
         if not messages_with_replies:
-            click.echo(f"No messages with comments found in {channel_info.title}")
+            click.echo(f"No messages with comments found in {channel.title}")
             await scraper.stop()
             return
 
         total_messages = len(messages_with_replies)
 
-        click.echo(f"Channel: {channel_info.title} (@{channel_info.username})")
+        click.echo(f"Channel: {channel.title} (@{channel.username})")
         if limit:
             click.echo(f"Processing last {total_messages} messages with comments")
         else:
             click.echo(f"Processing all {total_messages} messages with comments")
-        click.echo(f"\nDumping comments from {channel_info.title}...\n")
+        click.echo(f"\nDumping comments from {channel.title}...\n")
 
-        comments = await scraper.dump_comments(channel_name, messages_with_replies)
+        def progress_callback(current: int):
+            echo_static_line(f"[ Processing comment {current}]")
+
+        comments = await scraper.dump_comments(channel_name, messages_with_replies, progress_callback=progress_callback)
+        click.echo()
 
         click.echo(f"\n✓ Successfully dumped {len(comments)} comments")
         await scraper.stop()
@@ -220,7 +231,7 @@ def show_message_comments(ctx, message_id: int):
 
             # Display message
             click.echo(f"\n{'=' * 80}")
-            click.echo(f"MESSAGE ID: {message_data.id}")
+            click.echo(f"MESSAGE ID: {message_data.id} (https://t.me/{channel_name}/{message_data.id})")
             click.echo(f"{'=' * 80}")
             click.echo(f"Date: {message_data.date}")
             if message_data.sender_name:
@@ -269,8 +280,9 @@ def show_message_comments(ctx, message_id: int):
 
 
 @cli.command()
+@click.option('--init-data', is_flag=True, help='init channel data in db')
 @click.pass_context
-def info(ctx):
+def info(ctx, init_data):
     """Show channel information."""
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
@@ -300,6 +312,8 @@ def info(ctx):
             click.echo(f"  Last sync: {channel.last_sync_at or 'Never'}")
             click.echo(f"  Last message ID: {channel.last_sync_message_id or 'N/A'}")
         else:
+            if init_data:
+                db.get_or_create_channel(channel_info)
             click.echo(f"\nDatabase Status: Not synced yet")
 
         await scraper.stop()
@@ -309,7 +323,7 @@ def info(ctx):
 
 @cli.command()
 @click.argument("query")
-@click.option("--limit", type=int, default=50, help="Maximum number of results")
+@click.option("--limit", '-l', type=int, default=50, help="Maximum number of results")
 @click.option(
     "--target",
     type=click.Choice(["messages", "comments", "all"], case_sensitive=False),
@@ -322,7 +336,7 @@ def info(ctx):
     help="When searching messages, also show their comments",
 )
 @click.pass_context
-def search(ctx, query: str, channel: str, limit: int, target: str, include_comments: bool):
+def search(ctx, query: str, limit: int, target: str, include_comments: bool):
     """Search messages and/or comments by text content.
 
     QUERY is the search term to look for.
@@ -368,7 +382,7 @@ def search(ctx, query: str, channel: str, limit: int, target: str, include_comme
         for msg in message_results:
             channel_obj = db.get_channel(msg.channel.id)
             click.echo(f"[{msg.date}] {channel_obj.title} (@{channel_obj.username})")
-            click.echo(f"  Message ID: {msg.id}")
+            click.echo(f"  Message ID: {msg.id} (https://t.me/{channel_name}/{msg.id})")
             if msg.sender_name:
                 click.echo(f"  From: {msg.sender_name}")
 
@@ -453,6 +467,26 @@ def viewer(ctx):
     viewer_app.run()
 
 
+def echo_static_line(s):
+    # \r returns cursor to start of line
+    # end='' prevents newline
+    # flush=True ensures immediate output
+    sys.stdout.write(f'\r{color.yellow(s)}')
+    sys.stdout.flush()
+
+
+@cli.command()
+def echo_test():
+    import time
+    print('echo_test 0')
+    for i in range(5):
+        echo_static_line(f"Processing message {i}")
+
+    print('echo_test 1')
+    for i in range(5):
+        echo_static_line(f"Processing message {i}")
+        time.sleep(1)
+
+
 if __name__ == "__main__":
-    cli()
     cli()

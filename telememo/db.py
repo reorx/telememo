@@ -1,6 +1,7 @@
 """Database models and operations using Peewee ORM."""
 
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from peewee import (
@@ -58,6 +59,9 @@ class Message(BaseModel):
     grouped_id = IntegerField(null=True, index=True)
     created_at = DateTimeField(default=datetime.now)
 
+    def __str__(self):
+        return f'<Message id={self.id} channel={self.channel_id}>'
+
     class Meta:
         table_name = "messages"
         primary_key = False
@@ -104,6 +108,13 @@ def close_db() -> None:
         db.close()
 
 
+def delete_db(db_path: str) -> None:
+    """Delete database file."""
+    if Path(db_path).exists():
+        print(f"Deleting database file {db_path}...")
+        Path(db_path).unlink()
+
+
 def get_or_create_channel(channel_info: ChannelInfo) -> Channel:
     """Get or create a channel from ChannelInfo."""
     channel, created = Channel.get_or_create(
@@ -122,7 +133,7 @@ def get_or_create_channel(channel_info: ChannelInfo) -> Channel:
         channel.username = channel_info.username
         channel.description = channel_info.description
         channel.member_count = channel_info.member_count
-        channel.save()
+        channel.update()
     return channel
 
 
@@ -147,6 +158,7 @@ def save_message(message_data: MessageData) -> Message:
         },
     )
     if not created:
+        print('update message', message)
         # Update message if it already exists (e.g., edited message)
         message.text = message_data.text
         message.is_edited = message_data.is_edited
@@ -154,7 +166,7 @@ def save_message(message_data: MessageData) -> Message:
         message.views = message_data.views
         message.forwards = message_data.forwards
         message.replies = message_data.replies
-        message.save()
+        message.update()
     return message
 
 
@@ -173,7 +185,7 @@ def update_channel_sync_status(channel_id: int, last_message_id: int) -> None:
     channel = Channel.get_by_id(channel_id)
     channel.last_sync_message_id = last_message_id
     channel.last_sync_at = datetime.now()
-    channel.save()
+    channel.update()
 
 
 def get_channel(channel_id: int) -> Optional[Channel]:

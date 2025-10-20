@@ -7,6 +7,8 @@ from .telegram import TelegramClient
 from .types import ChannelInfo, Config
 
 
+ProgressCallback = Callable[[int, int], None]
+
 class Scraper:
     """Coordinates scraping operations between Telegram and database."""
 
@@ -52,7 +54,7 @@ class Scraper:
         channel_name: str,
         min_id: int = 0,
         limit: Optional[int] = None,
-        progress_callback: Optional[Callable[[int], None]] = None,
+        progress_callback: ProgressCallback|None = None,
     ) -> int:
         """Dump messages from a channel to the database.
 
@@ -109,7 +111,8 @@ class Scraper:
         channel_name: str,
         skip_comments: bool = False,
         limit: Optional[int] = None,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        messages_progress_callback: ProgressCallback|None = None,
+        comments_progress_callback: ProgressCallback|None = None,
     ) -> tuple[int, int]:
         """Sync new messages from a channel since last sync, optionally including comments.
 
@@ -117,8 +120,7 @@ class Scraper:
             channel_name: Channel username
             skip_comments: If True, only sync messages without fetching comments
             limit: Maximum number of new messages to sync (None for all)
-            progress_callback: Optional callback function(phase, current, total) for progress updates
-                             phase can be "messages" or "comments"
+            progress_callback: pass to dump_messages and dump_comments
 
         Returns:
             Tuple of (message_count, comment_count)
@@ -137,13 +139,13 @@ class Scraper:
             channel_name,
             min_id=min_id,
             limit=limit,
-            progress_callback=progress_callback,
+            progress_callback=messages_progress_callback,
         )
 
         # Phase 2: Fetch comments for new messages with replies
         comment_count = 0
         if messages and not skip_comments:
-            comment_count = await self.dump_comments(channel_name, messages, progress_callback=progress_callback)
+            comment_count = await self.dump_comments(channel_name, messages, progress_callback=comments_progress_callback)
 
         return (len(messages), comment_count)
 
@@ -179,14 +181,14 @@ class Scraper:
         self,
         channel_name: str,
         messages_with_replies: list[db.Message],
-        progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
+        progress_callback: ProgressCallback|None = None,
     ) -> int:
         """Dump comments for messages that have replies.
 
         Args:
             channel_name: Channel username
             limit: Number of most recent messages (with replies) to process (None for all)
-            progress_callback: Optional callback function(processed_messages, total_messages, message_id, comment_count)
+            progress_callback: Optional callback function(total_comments)
 
         Returns:
             Number of comments dumped
@@ -227,7 +229,7 @@ class Scraper:
 
             # Report progress with message details
             if progress_callback:
-                progress_callback(processed_messages, total_messages, message.id, message_comment_count)
+                progress_callback(total_comments)
 
         return total_comments
 
@@ -238,4 +240,5 @@ class Scraper:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
+        await self.stop()
         await self.stop()
