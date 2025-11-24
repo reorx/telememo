@@ -1,8 +1,9 @@
 """TUI message viewer using Rich library."""
 
 import sys
+import asyncio
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict
 
 from rich.console import Console, Group
 from rich.layout import Layout
@@ -10,16 +11,28 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.box import ROUNDED
 
-from . import db
+from . import db, config
 from .db import Message, Comment
+from .core import Scraper
+from .types import DisplayMessage
+from .utils import group_messages_to_display
 
 
 class MessageViewer:
     """Interactive TUI for viewing messages and their comments."""
 
-    def __init__(self, channel_id: int, console: Optional[Console] = None):
+    def __init__(
+        self,
+        channel_id: int,
+        scraper: Scraper,
+        channel_username: str,
+        console: Optional[Console] = None
+    ):
         self.channel_id = channel_id
+        self.channel_username = channel_username
+        self.scraper = scraper
         self.console = console or Console()
 
         # State management
@@ -29,24 +42,22 @@ class MessageViewer:
         self.focus = "table"  # "table" or "content"
         self.content_scroll_offset = 0
 
-        # Data
-        self.messages: List[Message] = []
+        # Data - now using DisplayMessage instead of Message ORM objects
+        self.display_messages: List[DisplayMessage] = []
         self.total_messages = 0
-        self.selected_message: Optional[Message] = None
+        self.selected_message: Optional[DisplayMessage] = None
         self.selected_comments: List[Comment] = []
 
         # Get channel info for building URLs
         self.channel = db.get_channel(channel_id)
 
-        # Load initial data
-        self.load_messages()
-
-    def load_messages(self) -> None:
-        """Load messages for current page from database."""
+    async def load_messages(self) -> None:
+        """Load messages for current page from database and convert to DisplayMessage."""
         self.total_messages = db.get_message_count(self.channel_id)
         offset = self.current_page * self.page_size
 
-        self.messages = list(
+        # Load raw Message ORM objects from database
+        db_messages = list(
             Message.select()
             .where(Message.channel == self.channel_id)
             .order_by(Message.date.desc())
@@ -54,15 +65,50 @@ class MessageViewer:
             .limit(self.page_size)
         )
 
-        # Load first message if available
-        if self.messages:
-            self.select_message(0)
+        if not db_messages:
+            self.display_messages = []
+            return
 
-    def select_message(self, index: int) -> None:
+        # Convert ORM objects to dicts
+        message_dicts = []
+        for msg in db_messages:
+            message_dicts.append({
+                'id': msg.id,
+                'channel': msg.channel.id if hasattr(msg.channel, 'id') else msg.channel,
+                'text': msg.text,
+                'date': msg.date,
+                'sender_id': msg.sender_id,
+                'sender_name': msg.sender_name,
+                'views': msg.views,
+                'forwards': msg.forwards,
+                'replies': msg.replies,
+                'is_edited': msg.is_edited,
+                'edit_date': msg.edit_date,
+                'media_type': msg.media_type,
+                'has_media': msg.has_media,
+                'grouped_id': msg.grouped_id,
+            })
+
+        # Fetch raw Telegram messages for forward info
+        message_ids = [msg['id'] for msg in message_dicts]
+        raw_messages = await self.scraper.get_raw_messages(self.channel_username, message_ids)
+
+        # Create mapping of message_id -> raw_message
+        raw_messages_map = {msg.id: msg for msg in raw_messages if msg}
+
+        # Group messages into DisplayMessage objects
+        self.display_messages = group_messages_to_display(message_dicts, raw_messages_map)
+
+        # Load first message if available
+        if self.display_messages:
+            await self.select_message(0)
+
+    async def select_message(self, index: int) -> None:
         """Select a message and load its comments."""
-        if 0 <= index < len(self.messages):
+        if 0 <= index < len(self.display_messages):
             self.current_selection = index
-            self.selected_message = self.messages[index]
+            self.selected_message = self.display_messages[index]
+            # Load comments for the primary message ID
             self.selected_comments = db.get_comments_for_message(
                 self.channel_id, self.selected_message.id
             )
@@ -72,7 +118,7 @@ class MessageViewer:
         """Build the message table for display."""
         # Calculate current page items
         start_idx = self.current_page * self.page_size + 1
-        end_idx = start_idx + len(self.messages) - 1
+        end_idx = start_idx + len(self.display_messages) - 1
 
         table = Table(
             show_header=True,
@@ -83,12 +129,22 @@ class MessageViewer:
             expand=True,
         )
 
+        # Add columns including new 'T' (Type) column
+        table.add_column("T", style="yellow", width=3, no_wrap=True)
         table.add_column("ID", style="cyan", width=10, no_wrap=True)
         table.add_column("Content", style="white", ratio=3, no_wrap=True)
         table.add_column("Date", style="green", width=20, no_wrap=True)
         table.add_column("Comments", style="yellow", width=10, justify="right")
 
-        for i, msg in enumerate(self.messages):
+        for i, msg in enumerate(self.display_messages):
+            # Build type flags
+            type_flags = []
+            if msg.is_album:
+                type_flags.append("A")
+            if msg.is_forwarded:
+                type_flags.append("F")
+            type_str = ",".join(type_flags) if type_flags else ""
+
             # Truncate content for table display
             content = msg.text or "(no text)"
             if len(content) > 100:
@@ -102,12 +158,13 @@ class MessageViewer:
                 date_str = msg.date.strftime("%Y-%m-%d %H:%M")
 
             # Comment count
-            comment_count = str(msg.replies or 0)
+            comment_count = str(msg.replies_count or 0)
 
             # Highlight selected row
             style = "bold reverse" if i == self.current_selection else ""
 
             table.add_row(
+                type_str,
                 str(msg.id),
                 content,
                 date_str,
@@ -122,7 +179,7 @@ class MessageViewer:
         return table
 
     def build_content_panel(self) -> Panel:
-        """Build the content panel showing message and comments."""
+        """Build the content panel showing message, media items, and comments."""
         if not self.selected_message:
             return Panel(
                 "[dim]No message selected[/]",
@@ -152,12 +209,37 @@ class MessageViewer:
 
         if msg.views:
             lines.append(f"[dim]Views: {msg.views}[/]")
+
+        # Show album info
+        if msg.is_album:
+            lines.append(f"[dim]Album: {len(msg.media_items)} items (Grouped ID: {msg.grouped_id})[/]")
+
         if msg.is_edited:
             if isinstance(msg.edit_date, str):
                 edit_display = msg.edit_date
             else:
                 edit_display = msg.edit_date.strftime('%Y-%m-%d %H:%M:%S') if msg.edit_date else "Unknown"
             lines.append(f"[dim italic]Edited: {edit_display}[/]")
+
+        # Show forward information
+        if msg.is_forwarded and msg.forward_info:
+            fwd = msg.forward_info
+            lines.append(f"[dim]Forwarded from:[/]")
+            if fwd.from_channel_id:
+                lines.append(f"[dim]  Channel ID: {fwd.from_channel_id}[/]")
+            if fwd.from_channel_name:
+                lines.append(f"[dim]  Channel: {fwd.from_channel_name}[/]")
+            if fwd.from_user_id:
+                lines.append(f"[dim]  User ID: {fwd.from_user_id}[/]")
+            if fwd.from_user_name:
+                lines.append(f"[dim]  User: {fwd.from_user_name}[/]")
+            if fwd.original_date:
+                if isinstance(fwd.original_date, str):
+                    orig_date_display = fwd.original_date[:19]
+                else:
+                    orig_date_display = fwd.original_date.strftime('%Y-%m-%d %H:%M:%S')
+                lines.append(f"[dim]  Original Date: {orig_date_display}[/]")
+
         lines.append("")
 
         # Message content
@@ -165,34 +247,68 @@ class MessageViewer:
         lines.append(msg.text or "[dim](no text)[/]")
         lines.append("")
 
+        # Media items section (if any)
+        if msg.media_items:
+            lines.append(f"[bold yellow]Media Items ({len(msg.media_items)}):[/]")
+            lines.append("")
+
+            for i, media in enumerate(msg.media_items, 1):
+                lines.append("┌" + "─" * 58 + "┐")
+                lines.append(f"│ [cyan]Media {i} of {len(msg.media_items)}[/]" + " " * (58 - len(f"Media {i} of {len(msg.media_items)}") - 1) + "│")
+                lines.append("├" + "─" * 58 + "┤")
+                lines.append(f"│ Message ID: {media.message_id}" + " " * (58 - len(f"Message ID: {media.message_id}") - 1) + "│")
+                lines.append(f"│ Type: {media.media_type or 'Unknown'}" + " " * (58 - len(f"Type: {media.media_type or 'Unknown'}") - 1) + "│")
+                lines.append("└" + "─" * 58 + "┘")
+                lines.append("")
+
         # Comments section
         if self.selected_comments:
             lines.append(f"[bold magenta]Comments ({len(self.selected_comments)}):[/]")
-            lines.append("─" * 80)
+            lines.append("")
 
             for i, comment in enumerate(self.selected_comments, 1):
-                lines.append(f"[cyan]Comment #{i} (ID: {comment.id})[/]")
+                # Box for each comment
+                lines.append("┌" + "─" * 58 + "┐")
+                lines.append(f"│ [cyan]Comment #{i} (ID: {comment.id})[/]" + " " * (58 - len(f"Comment #{i} (ID: {comment.id})") - 3) + "│")
+                lines.append("├" + "─" * 58 + "┤")
 
                 # Format comment date
                 if isinstance(comment.date, str):
                     comment_date_display = comment.date[:19]
                 else:
                     comment_date_display = comment.date.strftime('%Y-%m-%d %H:%M:%S')
-                lines.append(f"[dim]Date: {comment_date_display}[/]")
+                lines.append(f"│ Date: {comment_date_display}" + " " * (58 - len(f"Date: {comment_date_display}") - 1) + "│")
 
                 if comment.sender_name:
-                    lines.append(f"[dim]From: {comment.sender_name}[/]")
+                    sender_line = f"From: {comment.sender_name}"
+                    if len(sender_line) > 56:
+                        sender_line = sender_line[:54] + ".."
+                    lines.append(f"│ {sender_line}" + " " * (58 - len(sender_line) - 1) + "│")
+
                 if comment.is_reply_to_comment:
-                    lines.append(f"[dim]Reply to: #{comment.reply_to_comment_id}[/]")
+                    lines.append(f"│ Reply to: #{comment.reply_to_comment_id}" + " " * (58 - len(f"Reply to: #{comment.reply_to_comment_id}") - 1) + "│")
+
                 if comment.is_edited:
                     if isinstance(comment.edit_date, str):
-                        comment_edit_display = comment.edit_date
+                        comment_edit_display = comment.edit_date[:19]
                     else:
                         comment_edit_display = comment.edit_date.strftime('%Y-%m-%d %H:%M:%S') if comment.edit_date else "Unknown"
-                    lines.append(f"[dim italic]Edited: {comment_edit_display}[/]")
+                    lines.append(f"│ Edited: {comment_edit_display}" + " " * (58 - len(f"Edited: {comment_edit_display}") - 1) + "│")
+
+                lines.append("├" + "─" * 58 + "┤")
+
+                # Comment text - handle multi-line
+                comment_text = comment.text or "(no text)"
+                # Split by newlines and wrap
+                for text_line in comment_text.split("\n"):
+                    if len(text_line) <= 56:
+                        lines.append(f"│ {text_line}" + " " * (58 - len(text_line) - 1) + "│")
+                    else:
+                        # Simple truncation for now
+                        lines.append(f"│ {text_line[:54]}.." + " " * 2 + "│")
+
+                lines.append("└" + "─" * 58 + "┘")
                 lines.append("")
-                lines.append(comment.text or "[dim](no text)[/]")
-                lines.append("─" * 80)
         else:
             lines.append("[dim]No comments[/]")
 
@@ -231,27 +347,27 @@ class MessageViewer:
             return 1
         return (self.total_messages + self.page_size - 1) // self.page_size
 
-    def next_message(self) -> None:
+    async def next_message(self) -> None:
         """Move to next message in table."""
-        if self.current_selection < len(self.messages) - 1:
-            self.select_message(self.current_selection + 1)
+        if self.current_selection < len(self.display_messages) - 1:
+            await self.select_message(self.current_selection + 1)
 
-    def prev_message(self) -> None:
+    async def prev_message(self) -> None:
         """Move to previous message in table."""
         if self.current_selection > 0:
-            self.select_message(self.current_selection - 1)
+            await self.select_message(self.current_selection - 1)
 
-    def next_page(self) -> None:
+    async def next_page(self) -> None:
         """Load next page of messages."""
         if self.current_page < self.get_total_pages() - 1:
             self.current_page += 1
-            self.load_messages()
+            await self.load_messages()
 
-    def prev_page(self) -> None:
+    async def prev_page(self) -> None:
         """Load previous page of messages."""
         if self.current_page > 0:
             self.current_page -= 1
-            self.load_messages()
+            await self.load_messages()
 
     def scroll_content_down(self) -> None:
         """Scroll content panel down."""
@@ -298,9 +414,12 @@ class MessageViewer:
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Run the TUI viewer main loop."""
-        if not self.messages:
+        # Load initial messages
+        await self.load_messages()
+
+        if not self.display_messages:
             self.console.print("[yellow]No messages found in this channel.[/]")
             return
 
@@ -330,6 +449,7 @@ class MessageViewer:
 
                 # Skip if no input
                 if not key:
+                    await asyncio.sleep(0.01)  # Small delay to prevent CPU spinning
                     continue
 
                 # Handle key presses
@@ -342,13 +462,13 @@ class MessageViewer:
                 elif self.focus == "table":
                     # Table navigation
                     if key in ('\x1b[A', 'k'):  # Up arrow or k
-                        self.prev_message()
+                        await self.prev_message()
                     elif key in ('\x1b[B', 'j'):  # Down arrow or j
-                        self.next_message()
+                        await self.next_message()
                     elif key in ('\x1b[D', 'h'):  # Left arrow or h
-                        self.prev_page()
+                        await self.prev_page()
                     elif key in ('\x1b[C', 'l'):  # Right arrow or l
-                        self.next_page()
+                        await self.next_page()
 
                 elif self.focus == "content":
                     # Content scrolling

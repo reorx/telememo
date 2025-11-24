@@ -200,7 +200,7 @@ def dump_comments(ctx, limit: int):
         comments = await scraper.dump_comments(channel_name, messages_with_replies, progress_callback=progress_callback)
         click.echo()
 
-        click.echo(f"\n✓ Successfully dumped {len(comments)} comments")
+        click.echo(f"\n✓ Successfully dumped {comments} comments")
         await scraper.stop()
 
     asyncio.run(run_dump_comments())
@@ -445,7 +445,10 @@ def viewer(ctx):
     - Tab: Switch focus between message list and content
     - Esc or q: Exit viewer
     """
-    config = ctx.obj["config"]
+    import asyncio
+    from .core import Scraper
+
+    app_config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
 
     # Try to find channel by username first
@@ -463,9 +466,33 @@ def viewer(ctx):
         click.echo(f"Please run 'telememo dump {channel_name}' first to download messages.")
         ctx.exit(1)
 
-    # Launch viewer
-    viewer_app = MessageViewer(channel.id)
-    viewer_app.run()
+    # Run viewer with async support
+    asyncio.run(_run_viewer_async(app_config, channel.id, channel_name))
+
+
+async def _run_viewer_async(app_config, channel_id: int, channel_name: str):
+    """Async wrapper to run the viewer with Telegram client."""
+    from .core import Scraper
+    from telememo import config as cfg
+
+    # Get global session path
+    cfg.ensure_data_dir()
+    session_path = cfg.get_global_session_path()
+
+    # Initialize Scraper for fetching raw messages
+    scraper = Scraper(app_config, session_path)
+
+    try:
+        # Start the scraper (connects to Telegram)
+        await scraper.start()
+
+        # Create and run viewer
+        viewer_app = MessageViewer(channel_id, scraper, channel_name)
+        await viewer_app.run()
+
+    finally:
+        # Stop the scraper when viewer exits
+        await scraper.stop()
 
 
 def echo_static_line(s):
