@@ -56,7 +56,8 @@ class Scraper:
         min_id: int = 0,
         limit: Optional[int] = None,
         progress_callback: ProgressCallback|None = None,
-    ) -> int:
+        dry_run: bool = False,
+    ) -> list:
         """Dump messages from a channel to the database.
 
         Args:
@@ -64,9 +65,10 @@ class Scraper:
             min_id: Minimum message ID to dump (None for all)
             limit: Maximum number of messages to dump (None for all)
             progress_callback: Optional callback function(current, total) for progress updates
+            dry_run: If True, return message data dicts without saving to database
 
         Returns:
-            List of saved messages
+            List of saved Message objects (if dry_run=False) or list of data dicts (if dry_run=True)
         """
         # Get total message count for progress tracking
         total_messages = await self.telegram.get_message_count(channel_name)
@@ -85,7 +87,7 @@ class Scraper:
 
             # Save batch when it reaches batch_size
             if len(batch) >= batch_size:
-                messages.extend(db.save_messages_batch(batch))
+                messages.extend(db.save_messages_batch(batch, dry_run=dry_run))
                 batch.clear()
 
                 # Report progress
@@ -94,7 +96,7 @@ class Scraper:
 
         # Save remaining messages in batch
         if batch:
-            messages.extend(db.save_messages_batch(batch))
+            messages.extend(db.save_messages_batch(batch, dry_run=dry_run))
             if progress_callback:
                 progress_callback(_count)
 
@@ -149,6 +151,18 @@ class Scraper:
             comment_count = await self.dump_comments(channel_name, messages, progress_callback=comments_progress_callback)
 
         return (len(messages), comment_count)
+
+    async def get_raw_messages(self, channel_name: str, message_ids: list[int]) -> list:
+        """Get raw Telegram message objects for inspection.
+
+        Args:
+            channel_name: Channel username
+            message_ids: List of message IDs to fetch
+
+        Returns:
+            List of raw Telegram message objects
+        """
+        return await self.telegram.client.get_messages(channel_name, ids=message_ids)
 
     async def get_message_with_comments(self, channel_name: str, message_id: int):
         """Get a message and its comments without saving to database. For debugging purposes.

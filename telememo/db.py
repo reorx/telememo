@@ -137,25 +137,40 @@ def get_or_create_channel(channel_info: ChannelInfo) -> Channel:
     return channel
 
 
-def save_message(message_data: MessageData) -> Message:
-    """Save or update a message."""
+def save_message(message_data: MessageData, dry_run: bool = False) -> Message | dict:
+    """Save or update a message.
+
+    Args:
+        message_data: Message data to save
+        dry_run: If True, return data dict without saving to database
+
+    Returns:
+        Message object if dry_run=False, dict if dry_run=True
+    """
+    data = {
+        "channel": message_data.channel_id,
+        "id": message_data.id,
+        "text": message_data.text,
+        "date": message_data.date,
+        "sender_id": message_data.sender_id,
+        "sender_name": message_data.sender_name,
+        "views": message_data.views,
+        "forwards": message_data.forwards,
+        "replies": message_data.replies,
+        "is_edited": message_data.is_edited,
+        "edit_date": message_data.edit_date,
+        "media_type": message_data.media_type,
+        "has_media": message_data.has_media,
+        "grouped_id": message_data.grouped_id,
+    }
+
+    if dry_run:
+        return data
+
     message, created = Message.get_or_create(
         channel=message_data.channel_id,
         id=message_data.id,
-        defaults={
-            "text": message_data.text,
-            "date": message_data.date,
-            "sender_id": message_data.sender_id,
-            "sender_name": message_data.sender_name,
-            "views": message_data.views,
-            "forwards": message_data.forwards,
-            "replies": message_data.replies,
-            "is_edited": message_data.is_edited,
-            "edit_date": message_data.edit_date,
-            "media_type": message_data.media_type,
-            "has_media": message_data.has_media,
-            "grouped_id": message_data.grouped_id,
-        },
+        defaults=data,
     )
     if not created:
         print('update message', message)
@@ -170,8 +185,19 @@ def save_message(message_data: MessageData) -> Message:
     return message
 
 
-def save_messages_batch(message_datas: List[MessageData]) -> List[Message]:
-    """Save multiple messages in a batch."""
+def save_messages_batch(message_datas: List[MessageData], dry_run: bool = False) -> List[Message] | List[dict]:
+    """Save multiple messages in a batch.
+
+    Args:
+        message_datas: List of message data to save
+        dry_run: If True, return list of data dicts without saving to database
+
+    Returns:
+        List of Message objects if dry_run=False, list of dicts if dry_run=True
+    """
+    if dry_run:
+        return [save_message(message_data, dry_run=True) for message_data in message_datas]
+
     messages = []
     with db.atomic():
         for message_data in message_datas:
