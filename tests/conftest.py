@@ -27,7 +27,7 @@ def test_db():
 
 
 @pytest.fixture
-def test_config(test_db):
+def test_config(test_db, tmp_path):
     """Create test configuration."""
     try:
         # Load config from ~/.config/telememo/config.py
@@ -35,12 +35,15 @@ def test_config(test_db):
     except ValueError:
         pytest.skip("Missing configuration file at ~/.config/telememo/config.py for integration tests")
 
+    # Use a temporary session file for tests
+    test_session = tmp_path / "test_session.session"
+
     return Config(
         api_id=app_config.api_id,
         api_hash=app_config.api_hash,
         phone=app_config.phone,
         db_path=test_db,
-        session_name="telethon_session.db",
+        session_name=str(test_session),
     )
 
 

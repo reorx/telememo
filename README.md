@@ -82,7 +82,7 @@ When you run the CLI for the first time, you'll be prompted to:
 2. Enter the verification code sent to your Telegram app
 3. Optionally enter your 2FA password if enabled
 
-Your session will be saved locally (in a `telethon_session.db` file in `~/.local/share/telememo/channels/<channel_id>/`) so you won't need to authenticate again.
+Your session will be saved locally in `~/.local/share/telememo/telethon.session` so you won't need to authenticate again. This session file is shared across all channels.
 
 ## Usage
 

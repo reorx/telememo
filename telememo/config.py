@@ -66,6 +66,9 @@ def get_db_path(channel_id: str) -> Path:
 def get_session_path(channel_id: str) -> str:
     """Get the session file path for a channel.
 
+    DEPRECATED: Use get_global_session_path() instead.
+    This function is kept for backward compatibility only.
+
     Args:
         channel_id: Channel username or ID
 
@@ -74,6 +77,15 @@ def get_session_path(channel_id: str) -> str:
     """
     # Return as string - Telethon won't add .session extension when name ends with .db
     return str(get_channel_dir(channel_id) / "telethon")
+
+
+def get_global_session_path() -> str:
+    """Get the global session file path for all channels.
+
+    Returns:
+        Path to global session file at ~/.local/share/telememo/telethon.session
+    """
+    return str(get_data_dir() / "telethon.session")
 
 
 def ensure_config_dir() -> Path:
@@ -85,6 +97,17 @@ def ensure_config_dir() -> Path:
     config_dir = get_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
+
+
+def ensure_data_dir() -> Path:
+    """Create the data directory if it doesn't exist.
+
+    Returns:
+        Path to the data directory
+    """
+    data_dir = get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
 
 
 def ensure_channel_dir(channel_id: str) -> Path:

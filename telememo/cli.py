@@ -45,7 +45,10 @@ def cli(ctx, channel_name: str, debug: bool, reset_db: bool):
     # Get paths for this channel
     db_path = config.get_db_path(channel_name)
     print(f"db_path: {db_path}")
-    session_path = config.get_session_path(channel_name)
+
+    # Ensure data directory exists for global session file
+    config.ensure_data_dir()
+    session_path = config.get_global_session_path()
 
     # Store session path in context for Scraper to use
     ctx.obj["session_path"] = session_path
