@@ -7,37 +7,11 @@ import sys
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
 
-from . import color, db
+from . import color, config, db
 from .core import Scraper
 from .types import Config
 from .viewer import MessageViewer
-
-
-# Load environment variables
-load_dotenv()
-
-
-def load_config() -> Config:
-    """Load configuration from environment variables."""
-    # Get required API credentials
-    api_id = os.getenv("TELEGRAM_API_ID")
-    api_hash = os.getenv("TELEGRAM_API_HASH")
-
-    if not api_id or not api_hash:
-        raise ValueError(
-            "TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env file.\n"
-            "Get them from https://my.telegram.org"
-        )
-
-    return Config(
-        api_id=int(api_id),
-        api_hash=api_hash,
-        phone=os.getenv("PHONE"),  # Optional phone number
-        db_path=os.getenv("DB_PATH", "telememo.db"),
-        session_name=os.getenv("SESSION_NAME", "telememo_session"),
-    )
 
 
 @click.group()
@@ -50,22 +24,41 @@ def load_config() -> Config:
 @click.pass_context
 def cli(ctx, channel_name: str, debug: bool, reset_db: bool):
     """Telememo - Telegram channel message dumper to SQLite."""
-    # Initialize database
-    config = load_config()
-    db.init_db(config.db_path)
+    # Load configuration
+    app_config = config.get_config()
+
     ctx.ensure_object(dict)
-    ctx.obj["config"] = config
-    if channel_name and channel_name.startswith("@"):
-        channel_name = channel_name[1:]
+    ctx.obj["config"] = app_config
+
+    # Get channel name from CLI or config file
+    channel_name = channel_name or config.get_default_channel()
     if not channel_name:
-        click.echo("Error: Channel is required. Use -c/--channel-name to specify a channel.")
+        click.echo("Error: Channel is required. Use -c/--channel-name or set DEFAULT_CHANNEL in config.")
         ctx.exit(1)
+    if channel_name.startswith("@"):
+        channel_name = channel_name[1:]
     ctx.obj["channel_name"] = channel_name
+
+    # Ensure channel directory exists
+    config.ensure_channel_dir(channel_name)
+
+    # Get paths for this channel
+    db_path = config.get_db_path(channel_name)
+    print(f"db_path: {db_path}")
+    session_path = config.get_session_path(channel_name)
+
+    # Store session path in context for Scraper to use
+    ctx.obj["session_path"] = session_path
+
+    # Initialize database
+    db.init_db(str(db_path))
+
     if debug:
         logging.basicConfig(level=logging.DEBUG)
     ctx.obj["debug"] = debug
+
     if reset_db:
-        db.delete_db(config.db_path)
+        db.delete_db(str(db_path))
     ctx.obj["reset_db"] = reset_db
 
 
@@ -76,9 +69,10 @@ def dump_messages(ctx, limit: int):
     """Dump messages from a channel to the database."""
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
+    session_path = ctx.obj["session_path"]
 
     async def run_dump():
-        scraper = Scraper(config)
+        scraper = Scraper(config, session_path)
         await scraper.start()
         # Get or create channel
         await scraper.get_or_create_channel(channel_name)
@@ -115,9 +109,10 @@ def sync(ctx, skip_comments: bool, limit: int):
     """
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
+    session_path = ctx.obj["session_path"]
 
     async def run_sync():
-        scraper = Scraper(config)
+        scraper = Scraper(config, session_path)
         await scraper.start()
         # Get or create channel
         channel = await scraper.get_or_create_channel(channel_name)
@@ -172,9 +167,10 @@ def dump_comments(ctx, limit: int):
     """
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
+    session_path = ctx.obj["session_path"]
 
     async def run_dump_comments():
-        scraper = Scraper(config)
+        scraper = Scraper(config, session_path)
         await scraper.start()
         # Get or create channel
         channel = await scraper.get_or_create_channel(channel_name)
@@ -220,9 +216,10 @@ def show_message_comments(ctx, message_id: int):
     """
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
+    session_path = ctx.obj["session_path"]
 
     async def run_show_message_comments():
-        scraper = Scraper(config)
+        scraper = Scraper(config, session_path)
         await scraper.start()
 
         try:
@@ -286,9 +283,10 @@ def info(ctx, init_data):
     """Show channel information."""
     config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
+    session_path = ctx.obj["session_path"]
 
     async def run_info():
-        scraper = Scraper(config)
+        scraper = Scraper(config, session_path)
         await scraper.start()
 
         channel_info = await scraper.get_channel_info(channel_name)

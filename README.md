@@ -36,24 +36,33 @@ pip install -e ".[dev]"
 
 ## Configuration
 
-Create a `.env` file in the project root with the following variables:
+Create a configuration file at `~/.config/telememo/config.py`:
 
-```env
+```bash
+mkdir -p ~/.config/telememo
+cp config.example.py ~/.config/telememo/config.py
+```
+
+Edit `~/.config/telememo/config.py` with your credentials:
+
+```python
 # Telegram API credentials (get from https://my.telegram.org)
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_API_ID = 12345678
+TELEGRAM_API_HASH = "your_api_hash_here"
 
-# Optional: Your phone number (will be prompted if not provided)
-# PHONE=+1234567890
+# Your phone number (optional, will be prompted if not set)
+PHONE = "+1234567890"
 
-# Optional: Database path (default: telememo.db)
-# DB_PATH=telememo.db
+# Default channel to use when -c/--channel-name is not specified
+DEFAULT_CHANNEL = "example_channel"
 
-# Optional: Session name (default: telememo_session)
-# SESSION_NAME=telememo_session
-
-# Optional: Test channel for integration tests
-# TEST_CHANNEL=telegram
+# Optional: Configure multiple channels
+CHANNELS = {
+    "tech_news": {
+        "id": "@technews",
+        "description": "Technology news channel"
+    },
+}
 ```
 
 ### Getting Telegram API Credentials
@@ -73,7 +82,7 @@ When you run the CLI for the first time, you'll be prompted to:
 2. Enter the verification code sent to your Telegram app
 3. Optionally enter your 2FA password if enabled
 
-Your session will be saved locally (in a `.session` file) so you won't need to authenticate again.
+Your session will be saved locally (in a `telethon_session.db` file in `~/.local/share/telememo/channels/<channel_id>/`) so you won't need to authenticate again.
 
 ## Usage
 
@@ -81,37 +90,37 @@ Your session will be saved locally (in a `.session` file) so you won't need to a
 
 Dump all messages from a channel:
 ```bash
-telememo dump @channelname
+telememo -c @channelname dump-messages
+```
+
+Or use the default channel from config:
+```bash
+telememo dump-messages
 ```
 
 Dump with a limit:
 ```bash
-telememo dump @channelname --limit 100
+telememo -c @channelname dump-messages --limit 100
 ```
 
 ### Sync new messages
 
 Fetch only new messages since last sync:
 ```bash
-telememo sync @channelname
+telememo -c @channelname sync
 ```
 
 ### Show channel information
 
 ```bash
-telememo info @channelname
+telememo -c @channelname info
 ```
 
 ### Search messages
 
-Search across all channels:
-```bash
-telememo search "search term"
-```
-
 Search within a specific channel:
 ```bash
-telememo search "search term" --channel channelname --limit 20
+telememo -c @channelname search "search term" --limit 20
 ```
 
 ## Project Structure

@@ -11,11 +11,17 @@ Telememo is a Python CLI tool to dump Telegram channel messages to a local SQLit
 - Support incremental message synchronization
 - Store channel metadata and message content
 
-### Environment Variables
-The application uses the following environment variables from `.env`:
+### Configuration
+The application uses a Python configuration file at `~/.config/telememo/config.py`:
 - `TELEGRAM_API_ID`: Telegram API ID (from https://my.telegram.org)
 - `TELEGRAM_API_HASH`: Telegram API hash (from https://my.telegram.org)
 - `PHONE`: (Optional) Your phone number for authentication
+- `DEFAULT_CHANNEL`: (Optional) Default channel to use
+- `CHANNELS`: (Optional) Multiple channel configurations
+
+Data files are stored per channel in `~/.local/telememo/channels/<channel_id>/`:
+- `channel.db`: SQLite database for the channel
+- `telethon_session.db`: Telegram session file
 
 ## Tech Stack
 
@@ -24,7 +30,6 @@ The application uses the following environment variables from `.env`:
 - **Peewee**: Lightweight SQLite ORM
 - **Click**: CLI framework
 - **Pydantic**: Data validation and settings management
-- **python-dotenv**: Environment variable management
 - **cryptg**: Performance optimization for Telethon
 
 ## Architecture Principles
@@ -54,6 +59,13 @@ The application uses the following environment variables from `.env`:
 - Keep functions short and focused
 
 ## Module Responsibilities
+
+### `config.py`
+Configuration and path management:
+- Load configuration from `~/.config/telememo/config.py`
+- Manage paths for data and session files
+- Per-channel directory structure
+- XDG Base Directory Specification compliance
 
 ### `types.py`
 Shared Pydantic models for data validation and type safety:
@@ -147,7 +159,7 @@ This project uses **user authentication** (not bot authentication) because:
 Authentication flow:
 - Use `TelegramClient` with user phone number
 - First time: You'll receive a code via Telegram to verify your identity
-- Session is saved locally (in `.session` file) for future use
+- Session is saved locally (in `telethon_session.db` file in the channel's data directory) for future use
 - You must have access to the channels you want to scrape (either public channels or channels you're a member of)
 
 ## Message Storage Strategy

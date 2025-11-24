@@ -12,17 +12,18 @@ ProgressCallback = Callable[[int, int], None]
 class Scraper:
     """Coordinates scraping operations between Telegram and database."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, session_path: str = None):
         """Initialize scraper with configuration.
 
         Args:
             config: Application configuration
+            session_path: Path to session file (optional, uses config.session_name if not provided)
         """
         self.config = config
         self.telegram = TelegramClient(
             api_id=config.api_id,
             api_hash=config.api_hash,
-            session_name=config.session_name,
+            session_name=session_path or config.session_name,
         )
 
     async def start(self) -> None:

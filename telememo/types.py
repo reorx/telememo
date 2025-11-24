@@ -13,7 +13,7 @@ class Config(BaseModel):
     api_hash: str = Field(description="Telegram API hash")
     phone: Optional[str] = Field(default=None, description="Phone number for authentication (optional)")
     db_path: str = Field(default="telememo.db", description="SQLite database path")
-    session_name: str = Field(default="telememo_session", description="Telethon session name")
+    session_name: str = Field(default="telethon_session.db", description="Telethon session name")
 
 
 class ChannelInfo(BaseModel):
