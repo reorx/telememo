@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from telememo import config
 from telememo.core import Scraper
 from telememo.types import DisplayMessage, MediaItem, ForwardInfo
+from telememo.utils import extract_forward_info, group_messages_to_display
 
 
 def format_datetime(dt):
@@ -30,152 +31,6 @@ def format_datetime(dt):
     if isinstance(dt, datetime):
         return dt.isoformat()
     return str(dt)
-
-
-def extract_forward_info(raw_message) -> ForwardInfo | None:
-    """Extract forward information from a raw Telegram message."""
-    if not raw_message or not hasattr(raw_message, 'fwd_from') or not raw_message.fwd_from:
-        return None
-
-    fwd = raw_message.fwd_from
-    forward_info = ForwardInfo()
-
-    # Extract channel info
-    if hasattr(fwd, 'from_id'):
-        from_id = fwd.from_id
-        # Check if it's a channel
-        if hasattr(from_id, 'channel_id'):
-            forward_info.from_channel_id = from_id.channel_id
-            # Try to get channel name if available
-            if hasattr(raw_message, 'forward_header') and hasattr(raw_message.forward_header, 'from_name'):
-                forward_info.from_channel_name = raw_message.forward_header.from_name
-        # Check if it's a user
-        elif hasattr(from_id, 'user_id'):
-            forward_info.from_user_id = from_id.user_id
-
-    # Extract from_name (hidden forward source)
-    if hasattr(fwd, 'from_name') and fwd.from_name:
-        forward_info.from_user_name = fwd.from_name
-
-    # Extract original date
-    if hasattr(fwd, 'date'):
-        forward_info.original_date = fwd.date
-
-    # Extract original message ID
-    if hasattr(fwd, 'channel_post'):
-        forward_info.from_message_id = fwd.channel_post
-
-    # Extract post author
-    if hasattr(fwd, 'post_author') and fwd.post_author:
-        forward_info.post_author = fwd.post_author
-
-    return forward_info
-
-
-def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict) -> List[DisplayMessage]:
-    """Group raw message dicts into DisplayMessages based on grouped_id."""
-
-    # Group messages by grouped_id
-    grouped = defaultdict(list)
-    standalone = []
-
-    for msg_dict in message_dicts:
-        grouped_id = msg_dict.get('grouped_id')
-        if grouped_id:
-            grouped[grouped_id].append(msg_dict)
-        else:
-            standalone.append(msg_dict)
-
-    display_messages = []
-
-    # Process grouped messages (albums)
-    for grouped_id, group in grouped.items():
-        # Sort by message ID to get proper order
-        group.sort(key=lambda m: m['id'])
-        first_msg = group[0]
-
-        # Collect media items
-        media_items = []
-        for msg in group:
-            media_items.append(MediaItem(
-                message_id=msg['id'],
-                media_type=msg.get('media_type'),
-                has_media=msg.get('has_media', False)
-            ))
-
-        # Get forward info from first message
-        raw_message = raw_messages_map.get(first_msg['id'])
-        forward_info = extract_forward_info(raw_message)
-
-        # Aggregate stats
-        views_list = [msg.get('views') for msg in group if msg.get('views')]
-        forwards_list = [msg.get('forwards') for msg in group if msg.get('forwards')]
-        replies_list = [msg.get('replies') for msg in group if msg.get('replies')]
-
-        max_views = max(views_list) if views_list else None
-        max_forwards = max(forwards_list) if forwards_list else None
-        total_replies = sum(replies_list) if replies_list else None
-
-        display_msg = DisplayMessage(
-            id=first_msg['id'],
-            channel_id=first_msg['channel'],
-            date=first_msg['date'],
-            is_edited=any(msg.get('is_edited', False) for msg in group),
-            edit_date=first_msg.get('edit_date'),
-            sender_id=first_msg.get('sender_id'),
-            sender_name=first_msg.get('sender_name'),
-            text=first_msg.get('text'),  # Usually only first message has text
-            is_album=True,
-            grouped_id=grouped_id,
-            media_items=media_items,
-            is_forwarded=forward_info is not None,
-            forward_info=forward_info,
-            views=max_views,
-            forwards_count=max_forwards,
-            replies_count=total_replies,
-            raw_message_ids=[msg['id'] for msg in group]
-        )
-        display_messages.append(display_msg)
-
-    # Process standalone messages
-    for msg_dict in standalone:
-        raw_message = raw_messages_map.get(msg_dict['id'])
-        forward_info = extract_forward_info(raw_message)
-
-        # Add media item if message has media
-        media_items = []
-        if msg_dict.get('has_media'):
-            media_items.append(MediaItem(
-                message_id=msg_dict['id'],
-                media_type=msg_dict.get('media_type'),
-                has_media=True
-            ))
-
-        display_msg = DisplayMessage(
-            id=msg_dict['id'],
-            channel_id=msg_dict['channel'],
-            date=msg_dict['date'],
-            is_edited=msg_dict.get('is_edited', False),
-            edit_date=msg_dict.get('edit_date'),
-            sender_id=msg_dict.get('sender_id'),
-            sender_name=msg_dict.get('sender_name'),
-            text=msg_dict.get('text'),
-            is_album=False,
-            grouped_id=None,
-            media_items=media_items,
-            is_forwarded=forward_info is not None,
-            forward_info=forward_info,
-            views=msg_dict.get('views'),
-            forwards_count=msg_dict.get('forwards'),
-            replies_count=msg_dict.get('replies'),
-            raw_message_ids=[msg_dict['id']]
-        )
-        display_messages.append(display_msg)
-
-    # Sort by date (most recent first)
-    display_messages.sort(key=lambda m: m.date, reverse=True)
-
-    return display_messages
 
 
 def print_display_message(display_msg: DisplayMessage, index: int):
@@ -416,6 +271,210 @@ async def fetch_and_inspect(channel_name: str, limit: int, show_display_messages
         print("\n✓ Disconnected from Telegram")
 
 
+def deep_inspect_telethon_object(obj, name="", indent=0, max_depth=10, visited=None):
+    """Recursively inspect and display all attributes of a Telethon object.
+
+    Args:
+        obj: The object to inspect
+        name: Name of the current object/attribute
+        indent: Current indentation level
+        max_depth: Maximum recursion depth to prevent infinite loops
+        visited: Set of already visited object IDs to prevent circular references
+    """
+    if visited is None:
+        visited = set()
+
+    if max_depth <= 0:
+        print(f"{' ' * indent}... (max depth reached)")
+        return
+
+    # Get object ID to track visited objects
+    obj_id = id(obj)
+    if obj_id in visited and not isinstance(obj, (str, int, float, bool, type(None))):
+        print(f"{' ' * indent}... (circular reference)")
+        return
+
+    visited.add(obj_id)
+
+    prefix = ' ' * indent
+    type_name = type(obj).__name__
+
+    # Handle None
+    if obj is None:
+        print(f"{prefix}{name}: None")
+        return
+
+    # Handle primitive types
+    if isinstance(obj, (str, int, float, bool)):
+        if isinstance(obj, str) and len(obj) > 100:
+            print(f"{prefix}{name}: {repr(obj[:100])}... ({type_name}, length={len(obj)})")
+        else:
+            print(f"{prefix}{name}: {repr(obj)} ({type_name})")
+        return
+
+    # Handle bytes
+    if isinstance(obj, bytes):
+        if len(obj) > 32:
+            print(f"{prefix}{name}: {obj[:32].hex()}... ({type_name}, length={len(obj)} bytes)")
+        else:
+            print(f"{prefix}{name}: {obj.hex()} ({type_name}, {len(obj)} bytes)")
+        return
+
+    # Handle datetime
+    if isinstance(obj, datetime):
+        print(f"{prefix}{name}: {obj.isoformat()} ({type_name})")
+        return
+
+    # Handle lists
+    if isinstance(obj, list):
+        print(f"{prefix}{name}: ({type_name}, length={len(obj)})")
+        for i, item in enumerate(obj):
+            if i >= 20:  # Limit list items to prevent overwhelming output
+                print(f"{prefix}  ... ({len(obj) - 20} more items)")
+                break
+            deep_inspect_telethon_object(item, f"[{i}]", indent + 2, max_depth - 1, visited)
+        return
+
+    # Handle dictionaries
+    if isinstance(obj, dict):
+        print(f"{prefix}{name}: ({type_name}, keys={len(obj)})")
+        for key, value in obj.items():
+            deep_inspect_telethon_object(value, f"[{repr(key)}]", indent + 2, max_depth - 1, visited)
+        return
+
+    # Handle complex objects (Telethon objects, etc.)
+    print(f"{prefix}{name}: ({type_name})")
+
+    # Get all attributes (excluding private ones and methods)
+    try:
+        attrs = [attr for attr in dir(obj) if not attr.startswith('_') and not callable(getattr(obj, attr, None))]
+    except Exception:
+        attrs = []
+
+    if not attrs:
+        # Try to get __dict__ directly
+        try:
+            if hasattr(obj, '__dict__'):
+                for key, value in obj.__dict__.items():
+                    if not key.startswith('_'):
+                        deep_inspect_telethon_object(value, key, indent + 2, max_depth - 1, visited)
+            else:
+                print(f"{prefix}  (no inspectable attributes)")
+        except Exception as e:
+            print(f"{prefix}  (error accessing attributes: {e})")
+    else:
+        # Inspect each attribute
+        for attr in attrs:
+            try:
+                value = getattr(obj, attr)
+                deep_inspect_telethon_object(value, attr, indent + 2, max_depth - 1, visited)
+            except Exception as e:
+                print(f"{prefix}  {attr}: (error: {e})")
+
+
+async def inspect_single_message(channel_name: str, message_id: int):
+    """Fetch and deeply inspect a single message with full raw Telethon structure.
+
+    Args:
+        channel_name: Channel username
+        message_id: The message ID to inspect
+    """
+    print(f"Inspecting message ID {message_id} from @{channel_name}...")
+    print(f"Mode: DEEP INSPECTION (raw Telethon structure)\n")
+
+    # Load configuration
+    try:
+        app_config = config.get_config()
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Get global session path
+    config.ensure_data_dir()
+    session_path = config.get_global_session_path()
+
+    # Initialize Scraper
+    scraper = Scraper(app_config, session_path)
+
+    try:
+        # Start the scraper (connects to Telegram)
+        await scraper.start()
+        print("✓ Connected to Telegram\n")
+
+        # Get channel info
+        channel_info = await scraper.get_channel_info(channel_name)
+        print(f"Channel: {channel_info.title} (@{channel_info.username})")
+        print(f"Channel ID: {channel_info.id}\n")
+
+        # Fetch the single message using raw Telethon API
+        raw_messages = await scraper.telegram.client.get_messages(
+            channel_name,
+            ids=message_id
+        )
+
+        # Check if message was found
+        if not raw_messages or raw_messages is None:
+            print(f"✗ Message {message_id} not found in channel {channel_name}")
+            return
+
+        # Handle both single message and list responses
+        if isinstance(raw_messages, list):
+            if len(raw_messages) == 0 or raw_messages[0] is None:
+                print(f"✗ Message {message_id} not found in channel {channel_name}")
+                return
+            raw_message = raw_messages[0]
+        else:
+            raw_message = raw_messages
+
+        if raw_message is None:
+            print(f"✗ Message {message_id} not found in channel {channel_name}")
+            return
+
+        print("=" * 80)
+        print(f"INSPECTING MESSAGE ID: {message_id}")
+        print("=" * 80)
+
+        # Basic information
+        print("\n📋 BASIC INFORMATION:")
+        print("=" * 80)
+        print(f"Message ID: {raw_message.id}")
+        print(f"Date: {raw_message.date}")
+        if hasattr(raw_message, 'message') and raw_message.message:
+            msg_text = raw_message.message
+            if len(msg_text) > 300:
+                print(f"Text: {msg_text[:300]}...")
+                print(f"     (truncated, total length: {len(msg_text)})")
+            else:
+                print(f"Text: {msg_text}")
+        else:
+            print("Text: (empty)")
+
+        # Type information
+        print(f"\nObject Type: {type(raw_message)}")
+        print(f"Object Module: {type(raw_message).__module__}")
+
+        # Raw repr
+        print("\n📦 RAW REPR:")
+        print("=" * 80)
+        try:
+            print(repr(raw_message))
+        except Exception as e:
+            print(f"(error getting repr: {e})")
+
+        # Deep inspection
+        print("\n🔍 COMPLETE ATTRIBUTE INSPECTION:")
+        print("=" * 80)
+        deep_inspect_telethon_object(raw_message, "message", indent=0, max_depth=8)
+
+        print("\n" + "=" * 80)
+        print("✓ Inspection complete")
+        print("=" * 80)
+
+    finally:
+        await scraper.stop()
+        print("\n✓ Disconnected from Telegram")
+
+
 @click.command()
 @click.option(
     '--show-display-messages',
@@ -428,8 +487,13 @@ async def fetch_and_inspect(channel_name: str, limit: int, show_display_messages
     type=int,
     help='Maximum number of messages to fetch (default: 50)'
 )
+@click.option(
+    '--inspect-message',
+    type=int,
+    help='Inspect a specific message ID with full raw Telethon structure'
+)
 @click.argument('channel_name')
-def main(show_display_messages: bool, limit: int, channel_name: str):
+def main(show_display_messages: bool, limit: int, inspect_message: int, channel_name: str):
     """Debug script to fetch and inspect Telegram channel messages.
 
     CHANNEL_NAME: Channel username (with or without @)
@@ -438,12 +502,16 @@ def main(show_display_messages: bool, limit: int, channel_name: str):
         python debug_messages.py telememo_test
         python debug_messages.py --show-display-messages telememo_test
         python debug_messages.py --limit 100 telememo_test
+        python debug_messages.py --inspect-message 123 telememo_test
     """
     # Remove @ prefix if present
     channel_name = channel_name.lstrip('@')
 
-    # Run the async function
-    asyncio.run(fetch_and_inspect(channel_name, limit, show_display_messages))
+    # Run the appropriate async function
+    if inspect_message:
+        asyncio.run(inspect_single_message(channel_name, inspect_message))
+    else:
+        asyncio.run(fetch_and_inspect(channel_name, limit, show_display_messages))
 
 
 if __name__ == "__main__":
