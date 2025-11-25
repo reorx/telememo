@@ -1,10 +1,11 @@
 """TUI message viewer using Rich library."""
 
-import sys
 import asyncio
 from datetime import datetime
 from typing import List, Optional, Dict
 
+import readchar
+from readchar import key as rkey
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -47,6 +48,9 @@ class MessageViewer:
         self.total_messages = 0
         self.selected_message: Optional[DisplayMessage] = None
         self.selected_comments: List[Comment] = []
+
+        # Display state
+        self._dirty = True  # Track when display needs refresh
 
         # Get channel info for building URLs
         self.channel = db.get_channel(channel_id)
@@ -113,6 +117,7 @@ class MessageViewer:
                 self.channel_id, self.selected_message.id
             )
             self.content_scroll_offset = 0
+            self._dirty = True
 
     def build_table(self) -> Table:
         """Build the message table for display."""
@@ -373,46 +378,18 @@ class MessageViewer:
         """Scroll content panel down."""
         if self.focus == "content":
             self.content_scroll_offset += 1
+            self._dirty = True
 
     def scroll_content_up(self) -> None:
         """Scroll content panel up."""
         if self.focus == "content" and self.content_scroll_offset > 0:
             self.content_scroll_offset -= 1
+            self._dirty = True
 
     def toggle_focus(self) -> None:
         """Switch focus between table and content."""
         self.focus = "content" if self.focus == "table" else "table"
-
-    def get_key(self) -> str:
-        """Get a single keypress from stdin."""
-        import termios
-        import tty
-        import select
-
-        # Check if stdin is a TTY
-        if not sys.stdin.isatty():
-            raise RuntimeError("Viewer requires an interactive terminal")
-
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-
-            # Wait for input with timeout
-            if select.select([sys.stdin], [], [], 0.1)[0]:
-                ch = sys.stdin.read(1)
-
-                # Handle escape sequences (arrow keys, etc.)
-                if ch == '\x1b':
-                    # Check if more characters are available (arrow keys)
-                    if select.select([sys.stdin], [], [], 0.01)[0]:
-                        ch += sys.stdin.read(2)
-
-                return ch
-            else:
-                return ''  # No input
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        self._dirty = True
 
     async def run(self) -> None:
         """Run the TUI viewer main loop."""
@@ -436,24 +413,24 @@ class MessageViewer:
             running = True
 
             while running:
-                # Build and display layout
-                layout_group = Group(
-                    self.build_layout(),
-                    Panel(help_text, style="dim", border_style="dim"),
-                )
-                live.update(layout_group)
-                live.refresh()
+                # Refresh display only when needed
+                if self._dirty:
+                    layout_group = Group(
+                        self.build_layout(),
+                        Panel(help_text, style="dim", border_style="dim"),
+                    )
+                    live.update(layout_group)
+                    live.refresh()
+                    self._dirty = False
 
-                # Get keyboard input
-                key = self.get_key()
-
-                # Skip if no input
-                if not key:
-                    await asyncio.sleep(0.01)  # Small delay to prevent CPU spinning
-                    continue
+                # Get keyboard input (blocks until key pressed)
+                try:
+                    key = readchar.readkey()
+                except KeyboardInterrupt:
+                    break
 
                 # Handle key presses
-                if key in ('q', '\x1b'):  # q or Esc
+                if key in ('q', rkey.ESC):
                     running = False
 
                 elif key == '\t':  # Tab
@@ -461,18 +438,18 @@ class MessageViewer:
 
                 elif self.focus == "table":
                     # Table navigation
-                    if key in ('\x1b[A', 'k'):  # Up arrow or k
+                    if key in (rkey.UP, 'k'):
                         await self.prev_message()
-                    elif key in ('\x1b[B', 'j'):  # Down arrow or j
+                    elif key in (rkey.DOWN, 'j'):
                         await self.next_message()
-                    elif key in ('\x1b[D', 'h'):  # Left arrow or h
+                    elif key in (rkey.LEFT, 'h'):
                         await self.prev_page()
-                    elif key in ('\x1b[C', 'l'):  # Right arrow or l
+                    elif key in (rkey.RIGHT, 'l'):
                         await self.next_page()
 
                 elif self.focus == "content":
                     # Content scrolling
-                    if key in ('\x1b[A', 'k'):  # Up arrow or k
+                    if key in (rkey.UP, 'k'):
                         self.scroll_content_up()
-                    elif key in ('\x1b[B', 'j'):  # Down arrow or j
+                    elif key in (rkey.DOWN, 'j'):
                         self.scroll_content_down()
