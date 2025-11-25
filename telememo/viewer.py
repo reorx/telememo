@@ -134,12 +134,12 @@ class MessageViewer:
             expand=True,
         )
 
-        # Add columns including new 'T' (Type) column
-        table.add_column("T", style="yellow", width=3, no_wrap=True)
+        # Add columns: ID, Content, T (Type), Comments, Date
         table.add_column("ID", style="cyan", width=10, no_wrap=True)
         table.add_column("Content", style="white", ratio=3, no_wrap=True)
-        table.add_column("Date", style="green", width=20, no_wrap=True)
+        table.add_column("T", style="yellow", width=3, no_wrap=True)
         table.add_column("Comments", style="yellow", width=10, justify="right")
+        table.add_column("Date", style="green", width=20, no_wrap=True)
 
         for i, msg in enumerate(self.display_messages):
             # Build type flags
@@ -169,11 +169,11 @@ class MessageViewer:
             style = "bold reverse" if i == self.current_selection else ""
 
             table.add_row(
-                type_str,
                 str(msg.id),
                 content,
-                date_str,
+                type_str,
                 comment_count,
+                date_str,
                 style=style,
             )
 
@@ -194,132 +194,120 @@ class MessageViewer:
 
         msg = self.selected_message
 
-        # Build content lines
-        lines = []
+        # Build content as list of renderables (strings and Panels)
+        renderables = []
 
-        # Message header
-        lines.append(f"[bold cyan]Message ID: {msg.id}[/]")
+        # Message header section (as text)
+        header_lines = []
+        header_lines.append(f"[bold cyan]Message ID: {msg.id}[/]")
 
         # Format date
         if isinstance(msg.date, str):
-            date_display = msg.date[:19]  # Already a string, just truncate
+            date_display = msg.date[:19]
         else:
             date_display = msg.date.strftime('%Y-%m-%d %H:%M:%S')
-        lines.append(f"[dim]Date: {date_display}[/]")
+        header_lines.append(f"[dim]Date: {date_display}[/]")
 
         # Add message URL
         if self.channel and self.channel.username:
             msg_url = f"https://t.me/{self.channel.username}/{msg.id}"
-            lines.append(f"[dim]URL: {msg_url}[/]")
+            header_lines.append(f"[dim]URL: {msg_url}[/]")
 
         if msg.views:
-            lines.append(f"[dim]Views: {msg.views}[/]")
+            header_lines.append(f"[dim]Views: {msg.views}[/]")
 
         # Show album info
         if msg.is_album:
-            lines.append(f"[dim]Album: {len(msg.media_items)} items (Grouped ID: {msg.grouped_id})[/]")
+            header_lines.append(f"[dim]Album: {len(msg.media_items)} items (Grouped ID: {msg.grouped_id})[/]")
 
         if msg.is_edited:
             if isinstance(msg.edit_date, str):
                 edit_display = msg.edit_date
             else:
                 edit_display = msg.edit_date.strftime('%Y-%m-%d %H:%M:%S') if msg.edit_date else "Unknown"
-            lines.append(f"[dim italic]Edited: {edit_display}[/]")
+            header_lines.append(f"[dim italic]Edited: {edit_display}[/]")
 
         # Show forward information
         if msg.is_forwarded and msg.forward_info:
             fwd = msg.forward_info
-            lines.append(f"[dim]Forwarded from:[/]")
+            header_lines.append(f"[dim]Forwarded from:[/]")
             if fwd.from_channel_id:
-                lines.append(f"[dim]  Channel ID: {fwd.from_channel_id}[/]")
+                header_lines.append(f"[dim]  Channel ID: {fwd.from_channel_id}[/]")
             if fwd.from_channel_name:
-                lines.append(f"[dim]  Channel: {fwd.from_channel_name}[/]")
+                header_lines.append(f"[dim]  Channel: {fwd.from_channel_name}[/]")
             if fwd.from_user_id:
-                lines.append(f"[dim]  User ID: {fwd.from_user_id}[/]")
+                header_lines.append(f"[dim]  User ID: {fwd.from_user_id}[/]")
             if fwd.from_user_name:
-                lines.append(f"[dim]  User: {fwd.from_user_name}[/]")
+                header_lines.append(f"[dim]  User: {fwd.from_user_name}[/]")
             if fwd.original_date:
                 if isinstance(fwd.original_date, str):
                     orig_date_display = fwd.original_date[:19]
                 else:
                     orig_date_display = fwd.original_date.strftime('%Y-%m-%d %H:%M:%S')
-                lines.append(f"[dim]  Original Date: {orig_date_display}[/]")
+                header_lines.append(f"[dim]  Original Date: {orig_date_display}[/]")
 
-        lines.append("")
+        header_lines.append("")
+        header_lines.append("[bold]Content:[/]")
+        header_lines.append(msg.text or "[dim](no text)[/]")
 
-        # Message content
-        lines.append("[bold]Content:[/]")
-        lines.append(msg.text or "[dim](no text)[/]")
-        lines.append("")
+        renderables.append("\n".join(header_lines))
 
-        # Media items section (if any)
+        # Media items section using Panels
         if msg.media_items:
-            lines.append(f"[bold yellow]Media Items ({len(msg.media_items)}):[/]")
-            lines.append("")
+            renderables.append(f"\n[bold yellow]Media Items ({len(msg.media_items)}):[/]")
 
             for i, media in enumerate(msg.media_items, 1):
-                lines.append("┌" + "─" * 58 + "┐")
-                lines.append(f"│ [cyan]Media {i} of {len(msg.media_items)}[/]" + " " * (58 - len(f"Media {i} of {len(msg.media_items)}") - 1) + "│")
-                lines.append("├" + "─" * 58 + "┤")
-                lines.append(f"│ Message ID: {media.message_id}" + " " * (58 - len(f"Message ID: {media.message_id}") - 1) + "│")
-                lines.append(f"│ Type: {media.media_type or 'Unknown'}" + " " * (58 - len(f"Type: {media.media_type or 'Unknown'}") - 1) + "│")
-                lines.append("└" + "─" * 58 + "┘")
-                lines.append("")
+                media_content = f"Message ID: {media.message_id}\nType: {media.media_type or 'Unknown'}"
+                media_panel = Panel(
+                    media_content,
+                    title=f"Media {i} of {len(msg.media_items)}",
+                    border_style="cyan",
+                )
+                renderables.append(media_panel)
 
-        # Comments section
+        # Comments section using Panels
         if self.selected_comments:
-            lines.append(f"[bold magenta]Comments ({len(self.selected_comments)}):[/]")
-            lines.append("")
+            renderables.append(f"\n[bold magenta]Comments ({len(self.selected_comments)}):[/]")
 
             for i, comment in enumerate(self.selected_comments, 1):
-                # Box for each comment
-                lines.append("┌" + "─" * 58 + "┐")
-                lines.append(f"│ [cyan]Comment #{i} (ID: {comment.id})[/]" + " " * (58 - len(f"Comment #{i} (ID: {comment.id})") - 3) + "│")
-                lines.append("├" + "─" * 58 + "┤")
+                # Build comment content
+                comment_lines = []
 
                 # Format comment date
                 if isinstance(comment.date, str):
                     comment_date_display = comment.date[:19]
                 else:
                     comment_date_display = comment.date.strftime('%Y-%m-%d %H:%M:%S')
-                lines.append(f"│ Date: {comment_date_display}" + " " * (58 - len(f"Date: {comment_date_display}") - 1) + "│")
+                comment_lines.append(f"Date: {comment_date_display}")
 
                 if comment.sender_name:
-                    sender_line = f"From: {comment.sender_name}"
-                    if len(sender_line) > 56:
-                        sender_line = sender_line[:54] + ".."
-                    lines.append(f"│ {sender_line}" + " " * (58 - len(sender_line) - 1) + "│")
+                    comment_lines.append(f"From: {comment.sender_name}")
 
                 if comment.is_reply_to_comment:
-                    lines.append(f"│ Reply to: #{comment.reply_to_comment_id}" + " " * (58 - len(f"Reply to: #{comment.reply_to_comment_id}") - 1) + "│")
+                    comment_lines.append(f"Reply to: #{comment.reply_to_comment_id}")
 
                 if comment.is_edited:
                     if isinstance(comment.edit_date, str):
                         comment_edit_display = comment.edit_date[:19]
                     else:
                         comment_edit_display = comment.edit_date.strftime('%Y-%m-%d %H:%M:%S') if comment.edit_date else "Unknown"
-                    lines.append(f"│ Edited: {comment_edit_display}" + " " * (58 - len(f"Edited: {comment_edit_display}") - 1) + "│")
+                    comment_lines.append(f"Edited: {comment_edit_display}")
 
-                lines.append("├" + "─" * 58 + "┤")
+                comment_lines.append("")
+                comment_lines.append(comment.text or "(no text)")
 
-                # Comment text - handle multi-line
-                comment_text = comment.text or "(no text)"
-                # Split by newlines and wrap
-                for text_line in comment_text.split("\n"):
-                    if len(text_line) <= 56:
-                        lines.append(f"│ {text_line}" + " " * (58 - len(text_line) - 1) + "│")
-                    else:
-                        # Simple truncation for now
-                        lines.append(f"│ {text_line[:54]}.." + " " * 2 + "│")
-
-                lines.append("└" + "─" * 58 + "┘")
-                lines.append("")
+                comment_panel = Panel(
+                    "\n".join(comment_lines),
+                    title=f"Comment #{i} (ID: {comment.id})",
+                    border_style="cyan",
+                )
+                renderables.append(comment_panel)
         else:
-            lines.append("[dim]No comments[/]")
+            renderables.append("\n[dim]No comments[/]")
 
-        # Apply scroll offset
-        visible_lines = lines[self.content_scroll_offset:]
-        content_text = "\n".join(visible_lines)
+        # Apply scroll offset on renderables
+        visible_renderables = renderables[self.content_scroll_offset:]
+        content = Group(*visible_renderables)
 
         # Add focus indicator
         title = "Content"
@@ -327,7 +315,7 @@ class MessageViewer:
             title = f"[bold blue]▶[/] {title} (↑↓ to scroll)"
 
         return Panel(
-            content_text,
+            content,
             title=title,
             border_style="blue" if self.focus == "content" else "white",
         )
