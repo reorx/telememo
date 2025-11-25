@@ -328,8 +328,32 @@ def search_comments(query: str, channel_id: Optional[int] = None, limit: int = 5
     return list(q.order_by(Comment.date.desc()).limit(limit))
 
 
+def get_messages_by_grouped_id(channel_id: int, grouped_id: int) -> List[Message]:
+    """Get all messages that belong to the same group (album).
+
+    Args:
+        channel_id: Channel ID
+        grouped_id: The grouped_id that identifies the album
+
+    Returns:
+        List of messages in the group, ordered by ID
+    """
+    return list(
+        Message.select()
+        .where(
+            (Message.channel == channel_id) &
+            (Message.grouped_id == grouped_id)
+        )
+        .order_by(Message.id)
+    )
+
+
 def get_messages_with_replies(channel_id: int, limit: Optional[int] = None) -> List[Message]:
     """Get messages that have replies (comments).
+
+    For grouped messages (albums), if ANY message in the group has replies,
+    ALL messages in that group are returned. This is because in albums,
+    the message with text and the message with the replies field might be different.
 
     Args:
         channel_id: Channel ID
@@ -338,13 +362,42 @@ def get_messages_with_replies(channel_id: int, limit: Optional[int] = None) -> L
     Returns:
         List of messages ordered by message ID descending (most recent first)
     """
-    query = (
-        Message.select()
+    # Get all grouped_ids that have at least one message with replies
+    grouped_ids_with_replies = [
+        msg.grouped_id
+        for msg in Message.select(Message.grouped_id)
         .where(
             (Message.channel == channel_id) &
+            (Message.grouped_id.is_null(False)) &
             (Message.replies > 0)
         )
+        .distinct()
+    ]
+
+    # Build query to get:
+    # 1. All messages with replies (grouped or not)
+    # 2. All messages in groups that have replies
+    conditions = [
+        (Message.channel == channel_id) &
+        (Message.replies > 0)
+    ]
+
+    if grouped_ids_with_replies:
+        conditions.append(
+            (Message.channel == channel_id) &
+            (Message.grouped_id.in_(grouped_ids_with_replies))
+        )
+
+    # Combine conditions with OR
+    from peewee import reduce
+    import operator
+    combined_condition = reduce(operator.or_, conditions)
+
+    query = (
+        Message.select()
+        .where(combined_condition)
         .order_by(Message.id.desc())
+        .distinct()
     )
 
     if limit:

@@ -99,6 +99,13 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict)
         raw_message = raw_messages_map.get(first_msg['id'])
         forward_info = extract_forward_info(raw_message)
 
+        # Find message with text (usually the last message in the group)
+        text = None
+        for msg in reversed(group):  # Check from last to first
+            if msg.get('text'):
+                text = msg['text']
+                break
+
         # Aggregate stats
         views_list = [msg.get('views') for msg in group if msg.get('views')]
         forwards_list = [msg.get('forwards') for msg in group if msg.get('forwards')]
@@ -116,7 +123,7 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict)
             edit_date=first_msg.get('edit_date'),
             sender_id=first_msg.get('sender_id'),
             sender_name=first_msg.get('sender_name'),
-            text=first_msg.get('text'),  # Usually only first message has text
+            text=text,  # Text from the message that has it (usually last)
             is_album=True,
             grouped_id=grouped_id,
             media_items=media_items,

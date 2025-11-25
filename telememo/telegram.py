@@ -278,6 +278,30 @@ class TelegramClient:
         linked_message = discussion_msg_result.messages[0]
         linked_message_id = linked_message.id
 
+        # For grouped messages in the discussion group, find which one has replies
+        # The GetDiscussionMessageRequest might return a message in the group that
+        # doesn't have the replies field, so we need to check all messages in the group
+        if linked_message.grouped_id:
+            # Fetch all messages in this group
+            group_messages = await self.client.get_messages(
+                discussion_group_id,
+                limit=10,  # Albums typically have < 10 items
+                min_id=max(1, linked_message_id - 10),
+                max_id=linked_message_id + 10
+            )
+
+            # Find messages with the same grouped_id
+            grouped_msgs = [
+                msg for msg in group_messages
+                if msg and msg.grouped_id == linked_message.grouped_id
+            ]
+
+            # Find the one with replies > 0
+            for msg in grouped_msgs:
+                if msg.replies and msg.replies.replies > 0:
+                    linked_message_id = msg.id
+                    break
+
         # Fetch comments using GetRepliesRequest with pagination
         offset_id = 0
         batch_limit = 100

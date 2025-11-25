@@ -200,9 +200,13 @@ class Scraper:
     ) -> int:
         """Dump comments for messages that have replies.
 
+        For grouped messages (albums), the replies field might be on any message
+        in the group. This function handles that by tracking processed groups
+        and finding the correct message to fetch comments from.
+
         Args:
             channel_name: Channel username
-            limit: Number of most recent messages (with replies) to process (None for all)
+            messages_with_replies: List of messages that have replies (may include grouped messages)
             progress_callback: Optional callback function(total_comments)
 
         Returns:
@@ -216,20 +220,32 @@ class Scraper:
                 "Comments are not available for this channel."
             )
 
-        total_messages = len(messages_with_replies)
         total_comments = 0
-        processed_messages = 0
+        processed_groups = set()  # Track processed grouped_ids to avoid duplicates
 
         # Fetch comments for each message
         for message in messages_with_replies:
+            # Skip if we've already processed this group
+            if message.grouped_id and message.grouped_id in processed_groups:
+                continue
+
+            # For grouped messages, find the one with replies field
+            if message.grouped_id:
+                processed_groups.add(message.grouped_id)
+                # Get all messages in the group
+                group_messages = db.get_messages_by_grouped_id(message.channel.id, message.grouped_id)
+                # Find the message with replies > 0
+                message_with_replies = next((m for m in group_messages if m.replies and m.replies > 0), message)
+            else:
+                message_with_replies = message
+
+            # Fetch comments for the message that has replies
             batch = []
             batch_size = 100
-            message_comment_count = 0
 
-            async for comment_data in self.telegram.get_comments(channel_name, message.id):
+            async for comment_data in self.telegram.get_comments(channel_name, message_with_replies.id):
                 batch.append(comment_data)
                 total_comments += 1
-                message_comment_count += 1
 
                 # Save batch when it reaches batch_size
                 if len(batch) >= batch_size:
@@ -240,9 +256,7 @@ class Scraper:
             if batch:
                 db.save_comments_batch(batch)
 
-            processed_messages += 1
-
-            # Report progress with message details
+            # Report progress
             if progress_callback:
                 progress_callback(total_comments)
 
