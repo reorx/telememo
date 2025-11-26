@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from . import color, config, db
-from .core import Scraper
+from .core import Scraper, SyncResult
 from .types import Config
 from .viewer import MessageViewer
 
@@ -44,7 +44,6 @@ def cli(ctx, channel_name: str, debug: bool, reset_db: bool):
 
     # Get paths for this channel
     db_path = config.get_db_path(channel_name)
-    print(f"db_path: {db_path}")
 
     # Ensure data directory exists for global session file
     config.ensure_data_dir()
@@ -101,32 +100,36 @@ def dump_messages(ctx, limit: int):
 
 @cli.command()
 @click.option("--skip-comments", is_flag=True, help="Only sync messages, skip fetching comments")
-@click.option("--limit", '-l', type=int, help="Maximum number of new messages to sync")
+@click.option("--limit", '-l', type=int, default=100, help="Max messages in refresh mode (default: 100)")
+@click.option("--full", is_flag=True, help="Fetch all messages from channel start")
 @click.pass_context
-def sync(ctx, skip_comments: bool, limit: int):
-    """Sync new messages and their comments from a channel.
+def sync(ctx, skip_comments: bool, limit: int, full: bool):
+    """Sync messages and comments from a channel with smart updates.
 
-    By default, this command syncs both new messages and their comments.
+    Default behavior:
+    1. Try to fetch new messages since last sync
+    2. If no new messages, refresh last 100 messages (or --limit N)
+    3. Only update records when edit_date is different
+    4. Only fetch comments when replies count differs
+
+    Use --full to re-fetch all messages from the beginning.
     Use --skip-comments to sync only messages.
-    Use --limit to sync only the most recent N new messages.
+    Use --limit to change refresh limit (default: 100).
     """
-    config = ctx.obj["config"]
+    app_config = ctx.obj["config"]
     channel_name = ctx.obj.get("channel_name")
     session_path = ctx.obj["session_path"]
 
     async def run_sync():
-        scraper = Scraper(config, session_path)
+        scraper = Scraper(app_config, session_path)
         await scraper.start()
         # Get or create channel
         channel = await scraper.get_or_create_channel(channel_name)
 
-        click.echo(f"Syncing from {channel_name}...")
-
-        # Get total message count for progress tracking
-        total_messages = await scraper.telegram.get_message_count(channel_name)
-        if limit and limit < total_messages:
-            total_messages = limit
-
+        if full:
+            click.echo(f"Full sync from {channel_name}...")
+        else:
+            click.echo(f"Syncing from {channel_name}...")
 
         def messages_progress_callback(current: int):
             echo_static_line(f"[ Processing message {current}]")
@@ -134,9 +137,10 @@ def sync(ctx, skip_comments: bool, limit: int):
         def comments_progress_callback(current: int):
             echo_static_line(f"[ Processing comment {current}]")
 
-        message_count, comment_count = await scraper.sync_messages_and_comments(
+        result: SyncResult = await scraper.sync_messages_and_comments(
             channel_name,
             skip_comments=skip_comments,
+            full=full,
             limit=limit,
             messages_progress_callback=messages_progress_callback,
             comments_progress_callback=comments_progress_callback,
@@ -146,9 +150,15 @@ def sync(ctx, skip_comments: bool, limit: int):
         # Display summary
         click.echo("\n" + "=" * 50)
         click.echo("Sync Summary:")
-        click.echo(f"  Messages: {message_count}")
+        if result.is_refresh_mode:
+            click.echo("  Mode: Refresh (no new messages)")
+        elif full:
+            click.echo("  Mode: Full sync")
+        else:
+            click.echo("  Mode: Incremental")
+        click.echo(f"  Messages: {result.messages_added} added, {result.messages_updated} updated, {result.messages_unchanged} unchanged")
         if not skip_comments:
-            click.echo(f"  Comments: {comment_count}")
+            click.echo(f"  Comments: {result.comments_added} added, {result.comments_updated} updated, {result.comments_unchanged} unchanged")
         click.echo("=" * 50)
 
         await scraper.stop()
@@ -446,6 +456,7 @@ def viewer(ctx):
     - Esc or q: Exit viewer
     """
     import asyncio
+
     from .core import Scraper
 
     app_config = ctx.obj["config"]
@@ -472,8 +483,9 @@ def viewer(ctx):
 
 async def _run_viewer_async(app_config, channel_id: int, channel_name: str):
     """Async wrapper to run the viewer with Telegram client."""
-    from .core import Scraper
     from telememo import config as cfg
+
+    from .core import Scraper
 
     # Get global session path
     cfg.ensure_data_dir()

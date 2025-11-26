@@ -1,13 +1,34 @@
 """Core business logic coordinating telegram and database operations."""
 
+from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 from . import db
 from .telegram import TelegramClient
-from .types import ChannelInfo, Config
+from .types import ChannelInfo, Config, MessageData
 
 
 ProgressCallback = Callable[[int, int], None]
+
+
+@dataclass
+class SyncResult:
+    """Result of a sync operation."""
+    messages_added: int = 0
+    messages_updated: int = 0
+    messages_unchanged: int = 0
+    comments_added: int = 0
+    comments_updated: int = 0
+    comments_unchanged: int = 0
+    is_refresh_mode: bool = False  # True if we used refresh fallback
+
+    @property
+    def total_messages(self) -> int:
+        return self.messages_added + self.messages_updated + self.messages_unchanged
+
+    @property
+    def total_comments(self) -> int:
+        return self.comments_added + self.comments_updated + self.comments_unchanged
 
 class Scraper:
     """Coordinates scraping operations between Telegram and database."""
@@ -113,44 +134,181 @@ class Scraper:
         self,
         channel_name: str,
         skip_comments: bool = False,
-        limit: Optional[int] = None,
+        full: bool = False,
+        limit: int = 100,
         messages_progress_callback: ProgressCallback|None = None,
         comments_progress_callback: ProgressCallback|None = None,
-    ) -> tuple[int, int]:
-        """Sync new messages from a channel since last sync, optionally including comments.
+    ) -> SyncResult:
+        """Sync messages from a channel with smart updates.
+
+        Default behavior (incremental + refresh fallback):
+        1. Try to fetch messages newer than last_sync_message_id
+        2. If no new messages found, refresh last N messages (default 100)
+        3. Only update records when edit_date is different
+
+        Full sync mode (--full):
+        1. Fetch all messages from the beginning
+        2. Smart update based on edit_date comparison
+
+        Comment sync:
+        - Only fetch comments when message's replies count differs from DB
+        - Only update comment records when edit_date differs
 
         Args:
             channel_name: Channel username
             skip_comments: If True, only sync messages without fetching comments
-            limit: Maximum number of new messages to sync (None for all)
-            progress_callback: pass to dump_messages and dump_comments
+            full: If True, fetch all messages from the beginning
+            limit: Max messages to sync in refresh mode (default 100)
+            messages_progress_callback: Callback for message progress
+            comments_progress_callback: Callback for comment progress
 
         Returns:
-            Tuple of (message_count, comment_count)
+            SyncResult with counts for added/updated/unchanged messages and comments
         """
-        # Get channel info
+        result = SyncResult()
+
+        # Get channel info and ensure channel exists in DB
         channel_info = await self.telegram.get_channel_info(channel_name)
-        channel = db.get_channel(channel_info.id)
+        channel = db.get_or_create_channel(channel_info)
 
-        if channel:
-            min_id = channel.last_sync_message_id
+        # Phase 1: Fetch messages from Telegram
+        if full:
+            # Full mode: fetch all messages
+            min_id = 0
+            fetch_limit = None
         else:
-            min_id = None
+            # Incremental mode: fetch messages newer than last sync
+            min_id = channel.last_sync_message_id or 0
+            fetch_limit = None  # No limit for incremental
 
-        # Phase 1: Dump messages
-        messages = await self.dump_messages(
-            channel_name,
-            min_id=min_id,
-            limit=limit,
-            progress_callback=messages_progress_callback,
-        )
+        # Collect all messages from Telegram
+        fetched_messages: list[MessageData] = []
+        async for message_data in self.telegram.get_messages(channel_name, min_id=min_id, limit=fetch_limit):
+            fetched_messages.append(message_data)
+            if messages_progress_callback:
+                messages_progress_callback(len(fetched_messages))
 
-        # Phase 2: Fetch comments for new messages with replies
-        comment_count = 0
-        if messages and not skip_comments:
-            comment_count = await self.dump_comments(channel_name, messages, progress_callback=comments_progress_callback)
+        # Fallback: if no new messages and not full mode, refresh last N
+        if not fetched_messages and not full:
+            result.is_refresh_mode = True
+            async for message_data in self.telegram.get_messages(channel_name, limit=limit):
+                fetched_messages.append(message_data)
+                if messages_progress_callback:
+                    messages_progress_callback(len(fetched_messages))
 
-        return (len(messages), comment_count)
+        # Phase 2: Smart save messages
+        if fetched_messages:
+            # Get existing messages from DB for comparison
+            message_ids = [m.id for m in fetched_messages]
+            existing_messages = db.get_messages_by_ids(channel_info.id, message_ids)
+
+            # Smart batch save
+            _, added, updated, unchanged = db.save_messages_batch_smart(
+                fetched_messages, existing_messages
+            )
+            result.messages_added = added
+            result.messages_updated = updated
+            result.messages_unchanged = unchanged
+
+            # Update sync status in incremental/full mode (not refresh mode)
+            if not result.is_refresh_mode:
+                # Find the highest message ID and update sync status
+                max_id = max(m.id for m in fetched_messages)
+                db.update_channel_sync_status(channel_info.id, max_id)
+
+        # Phase 3: Smart sync comments
+        if not skip_comments:
+            comments_result = await self._sync_comments_smart(
+                channel_name,
+                channel_info.id,
+                fetched_messages,
+                progress_callback=comments_progress_callback,
+            )
+            result.comments_added = comments_result[0]
+            result.comments_updated = comments_result[1]
+            result.comments_unchanged = comments_result[2]
+
+        return result
+
+    async def _sync_comments_smart(
+        self,
+        channel_name: str,
+        channel_id: int,
+        fetched_messages: list[MessageData],
+        progress_callback: ProgressCallback|None = None,
+    ) -> tuple[int, int, int]:
+        """Smartly sync comments only when replies count differs.
+
+        Args:
+            channel_name: Channel username
+            channel_id: Channel ID
+            fetched_messages: Messages fetched from Telegram
+            progress_callback: Optional callback for progress
+
+        Returns:
+            (added_count, updated_count, unchanged_count)
+        """
+        added_total = 0
+        updated_total = 0
+        unchanged_total = 0
+
+        # Check if channel has a discussion group
+        discussion_group_id = await self.telegram.get_discussion_group(channel_name)
+        if not discussion_group_id:
+            # No discussion group, no comments available
+            return (0, 0, 0)
+
+        processed_groups = set()  # Track processed grouped_ids to avoid duplicates
+        total_comments_processed = 0
+
+        for msg_data in fetched_messages:
+            # Skip messages without replies
+            if not msg_data.replies or msg_data.replies <= 0:
+                continue
+
+            # Skip if we've already processed this group
+            if msg_data.grouped_id and msg_data.grouped_id in processed_groups:
+                continue
+
+            if msg_data.grouped_id:
+                processed_groups.add(msg_data.grouped_id)
+
+            # Get existing message from DB to compare replies count
+            existing_msg = db.get_message_by_id(channel_id, msg_data.id)
+
+            # Only fetch comments if:
+            # 1. Message is new (not in DB)
+            # 2. Replies count is different
+            should_fetch = (
+                existing_msg is None or
+                existing_msg.replies != msg_data.replies
+            )
+
+            if not should_fetch:
+                continue
+
+            # Fetch comments from Telegram
+            fetched_comments = []
+            async for comment_data in self.telegram.get_comments(channel_name, msg_data.id):
+                fetched_comments.append(comment_data)
+
+            if fetched_comments:
+                # Get existing comments from DB for comparison
+                existing_comments = db.get_comments_for_message_as_dict(channel_id, msg_data.id)
+
+                # Smart batch save comments
+                added, updated, unchanged = db.save_comments_batch_smart(
+                    fetched_comments, existing_comments
+                )
+                added_total += added
+                updated_total += updated
+                unchanged_total += unchanged
+
+                total_comments_processed += len(fetched_comments)
+                if progress_callback:
+                    progress_callback(total_comments_processed)
+
+        return (added_total, updated_total, unchanged_total)
 
     async def get_raw_messages(self, channel_name: str, message_ids: list[int]) -> list:
         """Get raw Telegram message objects for inspection.
