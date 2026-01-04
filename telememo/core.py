@@ -14,6 +14,7 @@ ProgressCallback = Callable[[int, int], None]
 @dataclass
 class SyncResult:
     """Result of a sync operation."""
+
     messages_added: int = 0
     messages_updated: int = 0
     messages_unchanged: int = 0
@@ -29,6 +30,7 @@ class SyncResult:
     @property
     def total_comments(self) -> int:
         return self.comments_added + self.comments_updated + self.comments_unchanged
+
 
 class Scraper:
     """Coordinates scraping operations between Telegram and database."""
@@ -76,7 +78,7 @@ class Scraper:
         channel_name: str,
         min_id: int = 0,
         limit: Optional[int] = None,
-        progress_callback: ProgressCallback|None = None,
+        progress_callback: ProgressCallback | None = None,
         dry_run: bool = False,
     ) -> list:
         """Dump messages from a channel to the database.
@@ -136,8 +138,8 @@ class Scraper:
         skip_comments: bool = False,
         full: bool = False,
         limit: int = 100,
-        messages_progress_callback: ProgressCallback|None = None,
-        comments_progress_callback: ProgressCallback|None = None,
+        messages_progress_callback: ProgressCallback | None = None,
+        comments_progress_callback: ProgressCallback | None = None,
     ) -> SyncResult:
         """Sync messages from a channel with smart updates.
 
@@ -197,15 +199,14 @@ class Scraper:
                     messages_progress_callback(len(fetched_messages))
 
         # Phase 2: Smart save messages
+        # Get existing messages from DB for comparison (before save)
+        existing_messages: dict[int, db.Message] = {}
         if fetched_messages:
-            # Get existing messages from DB for comparison
             message_ids = [m.id for m in fetched_messages]
             existing_messages = db.get_messages_by_ids(channel_info.id, message_ids)
 
             # Smart batch save
-            _, added, updated, unchanged = db.save_messages_batch_smart(
-                fetched_messages, existing_messages
-            )
+            _, added, updated, unchanged = db.save_messages_batch_smart(fetched_messages, existing_messages)
             result.messages_added = added
             result.messages_updated = updated
             result.messages_unchanged = unchanged
@@ -222,6 +223,7 @@ class Scraper:
                 channel_name,
                 channel_info.id,
                 fetched_messages,
+                existing_messages,
                 progress_callback=comments_progress_callback,
             )
             result.comments_added = comments_result[0]
@@ -235,7 +237,8 @@ class Scraper:
         channel_name: str,
         channel_id: int,
         fetched_messages: list[MessageData],
-        progress_callback: ProgressCallback|None = None,
+        existing_messages_map: dict[int, db.Message],
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[int, int, int]:
         """Smartly sync comments only when replies count differs.
 
@@ -243,6 +246,7 @@ class Scraper:
             channel_name: Channel username
             channel_id: Channel ID
             fetched_messages: Messages fetched from Telegram
+            existing_messages_map: Dict mapping message_id to Message (pre-save state)
             progress_callback: Optional callback for progress
 
         Returns:
@@ -273,16 +277,13 @@ class Scraper:
             if msg_data.grouped_id:
                 processed_groups.add(msg_data.grouped_id)
 
-            # Get existing message from DB to compare replies count
-            existing_msg = db.get_message_by_id(channel_id, msg_data.id)
+            # Get existing message from pre-save state to compare replies count
+            existing_msg = existing_messages_map.get(msg_data.id)
 
             # Only fetch comments if:
-            # 1. Message is new (not in DB)
-            # 2. Replies count is different
-            should_fetch = (
-                existing_msg is None or
-                existing_msg.replies != msg_data.replies
-            )
+            # 1. Message is new (not in DB before this sync)
+            # 2. Replies count is different from before
+            should_fetch = existing_msg is None or existing_msg.replies != msg_data.replies
 
             if not should_fetch:
                 continue
@@ -297,9 +298,7 @@ class Scraper:
                 existing_comments = db.get_comments_for_message_as_dict(channel_id, msg_data.id)
 
                 # Smart batch save comments
-                added, updated, unchanged = db.save_comments_batch_smart(
-                    fetched_comments, existing_comments
-                )
+                added, updated, unchanged = db.save_comments_batch_smart(fetched_comments, existing_comments)
                 added_total += added
                 updated_total += updated
                 unchanged_total += unchanged
@@ -336,7 +335,7 @@ class Scraper:
         # When passing a single ID, get_messages returns a single Message object, not a list
         message = await self.telegram.client.get_messages(channel_name, ids=message_id)
         if not message:
-            raise ValueError(f"Message {message_id} not found in channel {channel_name}")
+            raise ValueError(f'Message {message_id} not found in channel {channel_name}')
 
         message_data = await self.telegram._convert_message_to_data(message)
 
@@ -354,7 +353,7 @@ class Scraper:
         self,
         channel_name: str,
         messages_with_replies: list[db.Message],
-        progress_callback: ProgressCallback|None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> int:
         """Dump comments for messages that have replies.
 
@@ -374,8 +373,8 @@ class Scraper:
         discussion_group_id = await self.telegram.get_discussion_group(channel_name)
         if not discussion_group_id:
             raise ValueError(
-                f"Channel {channel_name} does not have a linked discussion group. "
-                "Comments are not available for this channel."
+                f'Channel {channel_name} does not have a linked discussion group. '
+                'Comments are not available for this channel.'
             )
 
         total_comments = 0

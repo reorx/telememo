@@ -5,8 +5,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from peewee import (
-    BooleanField, CharField, DateTimeField, ForeignKeyField, IntegerField, Model, SqliteDatabase,
-    TextField
+    BooleanField,
+    CharField,
+    DateTimeField,
+    ForeignKeyField,
+    IntegerField,
+    Model,
+    SqliteDatabase,
+    TextField,
 )
 
 from .types import ChannelInfo, CommentData, MessageData
@@ -37,14 +43,14 @@ class Channel(BaseModel):
     added_at = DateTimeField(default=datetime.now)
 
     class Meta:
-        table_name = "channels"
+        table_name = 'channels'
 
 
 class Message(BaseModel):
     """Message model."""
 
     id = IntegerField()
-    channel = ForeignKeyField(Channel, backref="messages", on_delete="CASCADE")
+    channel = ForeignKeyField(Channel, backref='messages', on_delete='CASCADE')
     text = TextField(null=True, index=True)
     date = DateTimeField(index=True)
     sender_id = IntegerField(null=True)
@@ -63,10 +69,10 @@ class Message(BaseModel):
         return f'<Message id={self.id} channel={self.channel_id}>'
 
     class Meta:
-        table_name = "messages"
+        table_name = 'messages'
         primary_key = False
         indexes = (
-            (("channel", "id"), True),  # Unique constraint on channel + message id
+            (('channel', 'id'), True),  # Unique constraint on channel + message id
         )
 
 
@@ -75,7 +81,7 @@ class Comment(BaseModel):
 
     id = IntegerField()
     parent_message_id = IntegerField(index=True)
-    parent_channel = ForeignKeyField(Channel, backref="comments", on_delete="CASCADE")
+    parent_channel = ForeignKeyField(Channel, backref='comments', on_delete='CASCADE')
     discussion_group_id = IntegerField()
     text = TextField(null=True, index=True)
     date = DateTimeField(index=True)
@@ -88,10 +94,10 @@ class Comment(BaseModel):
     created_at = DateTimeField(default=datetime.now)
 
     class Meta:
-        table_name = "comments"
+        table_name = 'comments'
         primary_key = False
         indexes = (
-            (("parent_channel", "parent_message_id", "id"), True),  # Unique constraint
+            (('parent_channel', 'parent_message_id', 'id'), True),  # Unique constraint
         )
 
 
@@ -111,7 +117,7 @@ def close_db() -> None:
 def delete_db(db_path: str) -> None:
     """Delete database file."""
     if Path(db_path).exists():
-        print(f"Deleting database file {db_path}...")
+        print(f'Deleting database file {db_path}...')
         Path(db_path).unlink()
 
 
@@ -120,11 +126,11 @@ def get_or_create_channel(channel_info: ChannelInfo) -> Channel:
     channel, created = Channel.get_or_create(
         id=channel_info.id,
         defaults={
-            "title": channel_info.title,
-            "username": channel_info.username,
-            "description": channel_info.description,
-            "member_count": channel_info.member_count,
-            "created_at": channel_info.created_at,
+            'title': channel_info.title,
+            'username': channel_info.username,
+            'description': channel_info.description,
+            'member_count': channel_info.member_count,
+            'created_at': channel_info.created_at,
         },
     )
     if not created:
@@ -148,20 +154,20 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         Message object if dry_run=False, dict if dry_run=True
     """
     data = {
-        "channel": message_data.channel_id,
-        "id": message_data.id,
-        "text": message_data.text,
-        "date": message_data.date,
-        "sender_id": message_data.sender_id,
-        "sender_name": message_data.sender_name,
-        "views": message_data.views,
-        "forwards": message_data.forwards,
-        "replies": message_data.replies,
-        "is_edited": message_data.is_edited,
-        "edit_date": message_data.edit_date,
-        "media_type": message_data.media_type,
-        "has_media": message_data.has_media,
-        "grouped_id": message_data.grouped_id,
+        'channel': message_data.channel_id,
+        'id': message_data.id,
+        'text': message_data.text,
+        'date': message_data.date,
+        'sender_id': message_data.sender_id,
+        'sender_name': message_data.sender_name,
+        'views': message_data.views,
+        'forwards': message_data.forwards,
+        'replies': message_data.replies,
+        'is_edited': message_data.is_edited,
+        'edit_date': message_data.edit_date,
+        'media_type': message_data.media_type,
+        'has_media': message_data.has_media,
+        'grouped_id': message_data.grouped_id,
     }
 
     if dry_run:
@@ -208,10 +214,9 @@ def save_messages_batch(message_datas: List[MessageData], dry_run: bool = False)
 
 def update_channel_sync_status(channel_id: int, last_message_id: int) -> None:
     """Update channel's last sync message ID and timestamp."""
-    Channel.update(
-        last_sync_message_id=last_message_id,
-        last_sync_at=datetime.now()
-    ).where(Channel.id == channel_id).execute()
+    Channel.update(last_sync_message_id=last_message_id, last_sync_at=datetime.now()).where(
+        Channel.id == channel_id
+    ).execute()
 
 
 def get_channel(channel_id: int) -> Optional[Channel]:
@@ -240,12 +245,7 @@ def search_messages(query: str, channel_id: Optional[int] = None, limit: int = 5
 
 def get_latest_messages(channel_id: int, limit: int = 10) -> List[Message]:
     """Get the latest messages from a channel."""
-    return list(
-        Message.select()
-        .where(Message.channel == channel_id)
-        .order_by(Message.date.desc())
-        .limit(limit)
-    )
+    return list(Message.select().where(Message.channel == channel_id).order_by(Message.date.desc()).limit(limit))
 
 
 def get_message_count(channel_id: int) -> int:
@@ -258,20 +258,20 @@ def save_comment(comment_data: CommentData) -> Comment:
     try:
         # Try to get existing comment
         comment = Comment.get(
-            (Comment.parent_channel == comment_data.parent_channel_id) &
-            (Comment.parent_message_id == comment_data.parent_message_id) &
-            (Comment.id == comment_data.id)
+            (Comment.parent_channel == comment_data.parent_channel_id)
+            & (Comment.parent_message_id == comment_data.parent_message_id)
+            & (Comment.id == comment_data.id)
         )
         # Update existing comment using UPDATE query
         Comment.update(
             text=comment_data.text,
             is_edited=comment_data.is_edited,
             edit_date=comment_data.edit_date,
-            discussion_group_id=comment_data.discussion_group_id
+            discussion_group_id=comment_data.discussion_group_id,
         ).where(
-            (Comment.parent_channel == comment_data.parent_channel_id) &
-            (Comment.parent_message_id == comment_data.parent_message_id) &
-            (Comment.id == comment_data.id)
+            (Comment.parent_channel == comment_data.parent_channel_id)
+            & (Comment.parent_message_id == comment_data.parent_message_id)
+            & (Comment.id == comment_data.id)
         ).execute()
         # Refresh the comment object
         comment.text = comment_data.text
@@ -312,10 +312,7 @@ def get_comments_for_message(channel_id: int, message_id: int) -> List[Comment]:
     """Get all comments for a specific message."""
     return list(
         Comment.select()
-        .where(
-            (Comment.parent_channel == channel_id) &
-            (Comment.parent_message_id == message_id)
-        )
+        .where((Comment.parent_channel == channel_id) & (Comment.parent_message_id == message_id))
         .order_by(Comment.date.asc())
     )
 
@@ -340,10 +337,7 @@ def get_messages_by_grouped_id(channel_id: int, grouped_id: int) -> List[Message
     """
     return list(
         Message.select()
-        .where(
-            (Message.channel == channel_id) &
-            (Message.grouped_id == grouped_id)
-        )
+        .where((Message.channel == channel_id) & (Message.grouped_id == grouped_id))
         .order_by(Message.id)
     )
 
@@ -366,39 +360,25 @@ def get_messages_with_replies(channel_id: int, limit: Optional[int] = None) -> L
     grouped_ids_with_replies = [
         msg.grouped_id
         for msg in Message.select(Message.grouped_id)
-        .where(
-            (Message.channel == channel_id) &
-            (Message.grouped_id.is_null(False)) &
-            (Message.replies > 0)
-        )
+        .where((Message.channel == channel_id) & (Message.grouped_id.is_null(False)) & (Message.replies > 0))
         .distinct()
     ]
 
     # Build query to get:
     # 1. All messages with replies (grouped or not)
     # 2. All messages in groups that have replies
-    conditions = [
-        (Message.channel == channel_id) &
-        (Message.replies > 0)
-    ]
+    conditions = [(Message.channel == channel_id) & (Message.replies > 0)]
 
     if grouped_ids_with_replies:
-        conditions.append(
-            (Message.channel == channel_id) &
-            (Message.grouped_id.in_(grouped_ids_with_replies))
-        )
+        conditions.append((Message.channel == channel_id) & (Message.grouped_id.in_(grouped_ids_with_replies)))
 
     # Combine conditions with OR
     from peewee import reduce
     import operator
+
     combined_condition = reduce(operator.or_, conditions)
 
-    query = (
-        Message.select()
-        .where(combined_condition)
-        .order_by(Message.id.desc())
-        .distinct()
-    )
+    query = Message.select().where(combined_condition).order_by(Message.id.desc()).distinct()
 
     if limit:
         query = query.limit(limit)
@@ -422,6 +402,7 @@ def _parse_datetime(value) -> datetime | None:
         return value
     # Parse string from SQLite (format: '2025-11-24 13:15:52+00:00')
     from datetime import timezone
+
     s = str(value).replace(' ', 'T')  # Normalize to ISO format
     # Handle timezone suffix
     if s.endswith('+00:00'):
@@ -460,10 +441,7 @@ def get_messages_by_ids(channel_id: int, message_ids: list[int]) -> dict[int, Me
     """
     if not message_ids:
         return {}
-    messages = Message.select().where(
-        (Message.channel == channel_id) &
-        (Message.id.in_(message_ids))
-    )
+    messages = Message.select().where((Message.channel == channel_id) & (Message.id.in_(message_ids)))
     return {msg.id: msg for msg in messages}
 
 
@@ -507,10 +485,7 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
             views=message_data.views,
             forwards=message_data.forwards,
             replies=message_data.replies,
-        ).where(
-            (Message.channel == message_data.channel_id) &
-            (Message.id == message_data.id)
-        ).execute()
+        ).where((Message.channel == message_data.channel_id) & (Message.id == message_data.id)).execute()
         # Update the existing object to reflect changes
         existing.text = message_data.text
         existing.is_edited = message_data.is_edited
@@ -524,8 +499,7 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
 
 
 def save_messages_batch_smart(
-    message_datas: list[MessageData],
-    existing_messages: dict[int, Message]
+    message_datas: list[MessageData], existing_messages: dict[int, Message]
 ) -> tuple[list[Message], int, int, int]:
     """Batch save messages with smart comparison.
 
@@ -559,8 +533,7 @@ def save_messages_batch_smart(
 def get_comments_for_message_as_dict(channel_id: int, message_id: int) -> dict[int, Comment]:
     """Get comments as dict mapping comment_id -> Comment."""
     comments = Comment.select().where(
-        (Comment.parent_channel == channel_id) &
-        (Comment.parent_message_id == message_id)
+        (Comment.parent_channel == channel_id) & (Comment.parent_message_id == message_id)
     )
     return {c.id: c for c in comments}
 
@@ -598,9 +571,9 @@ def save_comment_smart(comment_data: CommentData, existing: Comment | None) -> t
             edit_date=comment_data.edit_date,
             discussion_group_id=comment_data.discussion_group_id,
         ).where(
-            (Comment.parent_channel == comment_data.parent_channel_id) &
-            (Comment.parent_message_id == comment_data.parent_message_id) &
-            (Comment.id == comment_data.id)
+            (Comment.parent_channel == comment_data.parent_channel_id)
+            & (Comment.parent_message_id == comment_data.parent_message_id)
+            & (Comment.id == comment_data.id)
         ).execute()
         # Update the existing object to reflect changes
         existing.text = comment_data.text
@@ -613,8 +586,7 @@ def save_comment_smart(comment_data: CommentData, existing: Comment | None) -> t
 
 
 def save_comments_batch_smart(
-    comments: list[CommentData],
-    existing_comments: dict[int, Comment]
+    comments: list[CommentData], existing_comments: dict[int, Comment]
 ) -> tuple[int, int, int]:
     """Batch save comments with smart comparison.
 
@@ -642,9 +614,6 @@ def save_comments_batch_smart(
 def get_message_by_id(channel_id: int, message_id: int) -> Message | None:
     """Get a single message by its ID."""
     try:
-        return Message.get(
-            (Message.channel == channel_id) &
-            (Message.id == message_id)
-        )
+        return Message.get((Message.channel == channel_id) & (Message.id == message_id))
     except Message.DoesNotExist:
         return None
