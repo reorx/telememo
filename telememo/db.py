@@ -63,6 +63,15 @@ class Message(BaseModel):
     media_type = CharField(null=True)
     has_media = BooleanField(default=False)
     grouped_id = IntegerField(null=True, index=True)
+    # Forward source (A2; aligned with ForwardInfo)
+    is_forwarded = BooleanField(default=False)
+    fwd_from_channel_id = IntegerField(null=True)
+    fwd_from_channel_name = CharField(null=True)
+    fwd_from_user_id = IntegerField(null=True)
+    fwd_from_user_name = CharField(null=True)
+    fwd_from_message_id = IntegerField(null=True)
+    fwd_original_date = DateTimeField(null=True)
+    fwd_post_author = CharField(null=True)
     created_at = DateTimeField(default=datetime.now)
 
     def __str__(self):
@@ -101,11 +110,88 @@ class Comment(BaseModel):
         )
 
 
-def init_db(db_path: str) -> None:
-    """Initialize database connection and create tables."""
+def _existing_columns(table_name: str) -> set[str]:
+    """Return the set of column names that currently exist on a table."""
+    cursor = db.execute_sql(f'PRAGMA table_info({table_name})')
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _format_default(value) -> str:
+    """Format a Python default value as a SQL literal for ALTER TABLE."""
+    if isinstance(value, bool):
+        return '1' if value else '0'
+    if isinstance(value, (int, float)):
+        return str(value)
+    return f"'{value}'"
+
+
+def _add_column(table_name: str, name: str, ddl_type: str, default=None) -> None:
+    """Add a single column to an existing table (idempotency handled by caller)."""
+    sql = f'ALTER TABLE {table_name} ADD COLUMN {name} {ddl_type}'
+    if default is not None:
+        sql += f' DEFAULT {_format_default(default)}'
+    db.execute_sql(sql)
+
+
+def _migrate_model_columns(model) -> None:
+    """Add any model-defined columns missing from an existing table.
+
+    Lightweight migration so pre-existing per-channel databases gain new native
+    columns (e.g. the A2 forward fields) without a full rebuild.
+    """
+    table = model._meta.table_name
+    existing = _existing_columns(table)
+    for field in model._meta.sorted_fields:
+        if field.column_name in existing:
+            continue
+        default = field.default
+        if callable(default):
+            default = None
+        _add_column(table, field.column_name, field.field_type, default)
+
+
+def apply_optional_fields(optional_fields: dict) -> None:
+    """Add caller-declared extension columns to telememo tables (idempotent).
+
+    These columns are NOT part of telememo's Peewee models; they let a consumer
+    (e.g. condenser) overlay its own semantics on telememo data. telememo's own
+    write paths never touch them, so incremental sync will not clear them.
+
+    Shape::
+
+        apply_optional_fields({
+            'messages': [{'name': 'is_filtered', 'type': 'BOOLEAN', 'default': 0}],
+        })
+    """
+    for table_name, columns in optional_fields.items():
+        existing = _existing_columns(table_name)
+        for col in columns:
+            if col['name'] in existing:
+                continue
+            _add_column(table_name, col['name'], col['type'], col.get('default'))
+
+
+def init_db(db_path: str, optional_fields: dict | None = None) -> None:
+    """Initialize database connection and create tables.
+
+    Works both for telememo's per-channel databases and for a single unified
+    database shared across many channels (single-DB mode, D6): the schema already
+    keys messages by ``(channel, id)``, so the only difference is the path passed
+    here.
+
+    Args:
+        db_path: SQLite file path (or ':memory:').
+        optional_fields: Optional extension columns to add on telememo tables,
+            keyed by table name. See ``apply_optional_fields``.
+    """
     db.init(db_path)
     db.connect()
     db.create_tables([Channel, Message, Comment])
+    # Lightweight migration for pre-existing databases (adds new native columns).
+    for model in (Channel, Message, Comment):
+        _migrate_model_columns(model)
+    if optional_fields:
+        apply_optional_fields(optional_fields)
 
 
 def close_db() -> None:
@@ -168,6 +254,14 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         'media_type': message_data.media_type,
         'has_media': message_data.has_media,
         'grouped_id': message_data.grouped_id,
+        'is_forwarded': message_data.is_forwarded,
+        'fwd_from_channel_id': message_data.fwd_from_channel_id,
+        'fwd_from_channel_name': message_data.fwd_from_channel_name,
+        'fwd_from_user_id': message_data.fwd_from_user_id,
+        'fwd_from_user_name': message_data.fwd_from_user_name,
+        'fwd_from_message_id': message_data.fwd_from_message_id,
+        'fwd_original_date': message_data.fwd_original_date,
+        'fwd_post_author': message_data.fwd_post_author,
     }
 
     if dry_run:
@@ -472,6 +566,14 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
             media_type=message_data.media_type,
             has_media=message_data.has_media,
             grouped_id=message_data.grouped_id,
+            is_forwarded=message_data.is_forwarded,
+            fwd_from_channel_id=message_data.fwd_from_channel_id,
+            fwd_from_channel_name=message_data.fwd_from_channel_name,
+            fwd_from_user_id=message_data.fwd_from_user_id,
+            fwd_from_user_name=message_data.fwd_from_user_name,
+            fwd_from_message_id=message_data.fwd_from_message_id,
+            fwd_original_date=message_data.fwd_original_date,
+            fwd_post_author=message_data.fwd_post_author,
         )
         return message, 'added'
 

@@ -53,16 +53,49 @@ def extract_forward_info(raw_message) -> ForwardInfo | None:
     return forward_info
 
 
-def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict) -> List[DisplayMessage]:
+def forward_info_from_row(row: Dict) -> ForwardInfo | None:
+    """Build ForwardInfo from a stored message row's fwd_* columns.
+
+    Used when assembling DisplayMessages directly from the database (A2 landed
+    the forward fields), so no raw Telethon message is required.
+
+    Args:
+        row: Message dict with the fwd_* columns (from a DB query)
+
+    Returns:
+        ForwardInfo if the row is a forward, None otherwise
+    """
+    if not row.get('is_forwarded'):
+        return None
+    return ForwardInfo(
+        from_channel_id=row.get('fwd_from_channel_id'),
+        from_channel_name=row.get('fwd_from_channel_name'),
+        from_user_id=row.get('fwd_from_user_id'),
+        from_user_name=row.get('fwd_from_user_name'),
+        from_message_id=row.get('fwd_from_message_id'),
+        original_date=row.get('fwd_original_date'),
+        post_author=row.get('fwd_post_author'),
+    )
+
+
+def _resolve_forward_info(msg_dict: Dict, raw_messages_map: Dict | None) -> ForwardInfo | None:
+    """Pick the forward source: from raw message if available, else stored columns."""
+    if raw_messages_map is not None:
+        return extract_forward_info(raw_messages_map.get(msg_dict['id']))
+    return forward_info_from_row(msg_dict)
+
+
+def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict | None = None) -> List[DisplayMessage]:
     """Group raw message dicts into DisplayMessages based on grouped_id.
 
     This function converts database Message records into DisplayMessage objects,
-    grouping album messages by their grouped_id and extracting forward information
-    from raw Telegram messages.
+    grouping album messages by their grouped_id and attaching forward information.
 
     Args:
         message_dicts: List of message dictionaries (from database queries)
-        raw_messages_map: Dict mapping message_id -> raw Telethon message object
+        raw_messages_map: Optional dict mapping message_id -> raw Telethon message.
+            When provided, forward info is extracted from the raw messages.
+            When None, forward info is read from each row's stored fwd_* columns.
 
     Returns:
         List of DisplayMessage objects sorted by date (most recent first)
@@ -89,15 +122,12 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict)
         # Collect media items
         media_items = []
         for msg in group:
-            media_items.append(MediaItem(
-                message_id=msg['id'],
-                media_type=msg.get('media_type'),
-                has_media=msg.get('has_media', False)
-            ))
+            media_items.append(
+                MediaItem(message_id=msg['id'], media_type=msg.get('media_type'), has_media=msg.get('has_media', False))
+            )
 
-        # Get forward info from first message
-        raw_message = raw_messages_map.get(first_msg['id'])
-        forward_info = extract_forward_info(raw_message)
+        # Get forward info from first message (raw message or stored columns)
+        forward_info = _resolve_forward_info(first_msg, raw_messages_map)
 
         # Find message with text (usually the last message in the group)
         text = None
@@ -132,23 +162,20 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict)
             views=max_views,
             forwards_count=max_forwards,
             replies_count=total_replies,
-            raw_message_ids=[msg['id'] for msg in group]
+            raw_message_ids=[msg['id'] for msg in group],
         )
         display_messages.append(display_msg)
 
     # Process standalone messages
     for msg_dict in standalone:
-        raw_message = raw_messages_map.get(msg_dict['id'])
-        forward_info = extract_forward_info(raw_message)
+        forward_info = _resolve_forward_info(msg_dict, raw_messages_map)
 
         # Add media item if message has media
         media_items = []
         if msg_dict.get('has_media'):
-            media_items.append(MediaItem(
-                message_id=msg_dict['id'],
-                media_type=msg_dict.get('media_type'),
-                has_media=True
-            ))
+            media_items.append(
+                MediaItem(message_id=msg_dict['id'], media_type=msg_dict.get('media_type'), has_media=True)
+            )
 
         display_msg = DisplayMessage(
             id=msg_dict['id'],
@@ -167,7 +194,7 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict)
             views=msg_dict.get('views'),
             forwards_count=msg_dict.get('forwards'),
             replies_count=msg_dict.get('replies'),
-            raw_message_ids=[msg_dict['id']]
+            raw_message_ids=[msg_dict['id']],
         )
         display_messages.append(display_msg)
 

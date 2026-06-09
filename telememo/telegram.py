@@ -11,12 +11,109 @@ from telethon.tl.types import Message as TgMessage
 from telethon.tl.types import User
 
 from .types import ChannelInfo, MessageData, CommentData
+from .utils import extract_forward_info
+
+
+def convert_channel_to_info(entity: TgChannel) -> ChannelInfo:
+    """Convert a Telegram channel entity to ChannelInfo.
+
+    Args:
+        entity: Telegram channel entity
+
+    Returns:
+        ChannelInfo object
+    """
+    # Get full channel info for additional details
+    full = entity.full if hasattr(entity, 'full') else None
+
+    return ChannelInfo(
+        id=entity.id,
+        title=entity.title,
+        username=entity.username if hasattr(entity, 'username') else None,
+        description=full.about if full and hasattr(full, 'about') else None,
+        member_count=full.participants_count if full and hasattr(full, 'participants_count') else None,
+        created_at=entity.date if hasattr(entity, 'date') else None,
+    )
+
+
+def convert_message_to_data(message: TgMessage) -> MessageData:
+    """Convert a raw Telegram message to MessageData (storage record).
+
+    Includes A2 forward source fields via extract_forward_info.
+
+    Args:
+        message: Telegram message object
+
+    Returns:
+        MessageData object
+    """
+    # Get sender information
+    sender_id = message.sender_id
+    sender_name = None
+    if message.sender:
+        if isinstance(message.sender, User):
+            parts = []
+            if message.sender.first_name:
+                parts.append(message.sender.first_name)
+            if message.sender.last_name:
+                parts.append(message.sender.last_name)
+            sender_name = ' '.join(parts) if parts else message.sender.username
+        elif hasattr(message.sender, 'title'):
+            sender_name = message.sender.title
+
+    # Determine media type
+    media_type = None
+    has_media = message.media is not None
+    if has_media and message.media:
+        media_type = message.media.__class__.__name__.replace('MessageMedia', '').lower()
+
+    # Get message stats
+    views = message.views if hasattr(message, 'views') else None
+    forwards = message.forwards if hasattr(message, 'forwards') else None
+
+    # Get replies count
+    replies = None
+    if hasattr(message, 'replies') and message.replies:
+        replies = message.replies.replies
+
+    # Get grouped_id for media albums
+    grouped_id = None
+    if hasattr(message, 'grouped_id'):
+        grouped_id = message.grouped_id
+
+    # Extract forward source info (A2: persisted to the Message table)
+    forward_info = extract_forward_info(message)
+
+    return MessageData(
+        id=message.id,
+        channel_id=message.peer_id.channel_id,
+        text=message.text or None,
+        date=message.date,
+        sender_id=sender_id,
+        sender_name=sender_name,
+        views=views,
+        forwards=forwards,
+        replies=replies,
+        is_edited=message.edit_date is not None,
+        edit_date=message.edit_date,
+        media_type=media_type,
+        has_media=has_media,
+        grouped_id=grouped_id,
+        is_forwarded=forward_info is not None,
+        fwd_from_channel_id=forward_info.from_channel_id if forward_info else None,
+        fwd_from_channel_name=forward_info.from_channel_name if forward_info else None,
+        fwd_from_user_id=forward_info.from_user_id if forward_info else None,
+        fwd_from_user_name=forward_info.from_user_name if forward_info else None,
+        fwd_from_message_id=forward_info.from_message_id if forward_info else None,
+        fwd_original_date=forward_info.original_date if forward_info else None,
+        fwd_post_author=forward_info.post_author if forward_info else None,
+    )
 
 
 class TelegramClient:
     """Wrapper for Telethon TelegramClient."""
 
-    def __init__(self, api_id: int, api_hash: str, session_name: str = "telememo_session"):
+    def __init__(self, api_id: int, api_hash: str, session_name: str = 'telememo_session'):
         """Initialize Telegram client.
 
         Args:
@@ -25,11 +122,12 @@ class TelegramClient:
             session_name: Session file name
         """
         import platform
+
         self.client = TelethonClient(
             session_name,
             api_id,
             api_hash,
-            device_model=f"Telememo on {platform.system()}",
+            device_model=f'Telememo on {platform.system()}',
             system_version=platform.release(),
         )
         self._connected = False
@@ -40,9 +138,11 @@ class TelegramClient:
         Args:
             phone: Phone number for authentication (optional, will prompt if not provided)
         """
+
         # Custom password callback that only prompts if 2FA is actually required
         def password_callback():
             import getpass
+
             password = getpass.getpass('2FA password (press Enter if not enabled): ')
             return password if password else None
 
@@ -125,92 +225,19 @@ class TelegramClient:
             Total message count
         """
         entity = await self.client.get_entity(channel)
-        if hasattr(entity, "id"):
+        if hasattr(entity, 'id'):
             # Get the last message ID which represents the total count
             async for message in self.client.iter_messages(entity, limit=1):
                 return message.id if message else 0
         return 0
 
     def _convert_channel_to_info(self, entity: TgChannel) -> ChannelInfo:
-        """Convert Telegram channel entity to ChannelInfo.
-
-        Args:
-            entity: Telegram channel entity
-
-        Returns:
-            ChannelInfo object
-        """
-        # Get full channel info for additional details
-        full = entity.full if hasattr(entity, "full") else None
-
-        return ChannelInfo(
-            id=entity.id,
-            title=entity.title,
-            username=entity.username if hasattr(entity, "username") else None,
-            description=full.about if full and hasattr(full, "about") else None,
-            member_count=full.participants_count if full and hasattr(full, "participants_count") else None,
-            created_at=entity.date if hasattr(entity, "date") else None,
-        )
+        """Convert Telegram channel entity to ChannelInfo (delegates to module fn)."""
+        return convert_channel_to_info(entity)
 
     async def _convert_message_to_data(self, message: TgMessage) -> MessageData:
-        """Convert Telegram message to MessageData.
-
-        Args:
-            message: Telegram message object
-
-        Returns:
-            MessageData object
-        """
-        # Get sender information
-        sender_id = message.sender_id
-        sender_name = None
-        if message.sender:
-            if isinstance(message.sender, User):
-                parts = []
-                if message.sender.first_name:
-                    parts.append(message.sender.first_name)
-                if message.sender.last_name:
-                    parts.append(message.sender.last_name)
-                sender_name = " ".join(parts) if parts else message.sender.username
-            elif hasattr(message.sender, "title"):
-                sender_name = message.sender.title
-
-        # Determine media type
-        media_type = None
-        has_media = message.media is not None
-        if has_media and message.media:
-            media_type = message.media.__class__.__name__.replace("MessageMedia", "").lower()
-
-        # Get message stats
-        views = message.views if hasattr(message, "views") else None
-        forwards = message.forwards if hasattr(message, "forwards") else None
-
-        # Get replies count
-        replies = None
-        if hasattr(message, "replies") and message.replies:
-            replies = message.replies.replies
-
-        # Get grouped_id for media albums
-        grouped_id = None
-        if hasattr(message, "grouped_id"):
-            grouped_id = message.grouped_id
-
-        return MessageData(
-            id=message.id,
-            channel_id=message.peer_id.channel_id,
-            text=message.text or None,
-            date=message.date,
-            sender_id=sender_id,
-            sender_name=sender_name,
-            views=views,
-            forwards=forwards,
-            replies=replies,
-            is_edited=message.edit_date is not None,
-            edit_date=message.edit_date,
-            media_type=media_type,
-            has_media=has_media,
-            grouped_id=grouped_id,
-        )
+        """Convert Telegram message to MessageData (delegates to module fn)."""
+        return convert_message_to_data(message)
 
     async def get_discussion_group(self, channel: Union[str, int]) -> Optional[int]:
         """Get the linked discussion group ID for a channel.
@@ -224,7 +251,7 @@ class TelegramClient:
         entity = await self.client.get_entity(channel)
         # Get full channel information using GetFullChannelRequest
         full_channel = await self.client(GetFullChannelRequest(entity))
-        if hasattr(full_channel, "full_chat") and hasattr(full_channel.full_chat, "linked_chat_id"):
+        if hasattr(full_channel, 'full_chat') and hasattr(full_channel.full_chat, 'linked_chat_id'):
             linked_chat_id = full_channel.full_chat.linked_chat_id
             if linked_chat_id:
                 return linked_chat_id
@@ -264,10 +291,7 @@ class TelegramClient:
 
         # Get the discussion message (the linked message in the discussion group)
         try:
-            discussion_msg_result = await self.client(GetDiscussionMessageRequest(
-                peer=entity,
-                msg_id=message_id
-            ))
+            discussion_msg_result = await self.client(GetDiscussionMessageRequest(peer=entity, msg_id=message_id))
         except Exception:
             # Unable to get discussion message
             return
@@ -287,14 +311,11 @@ class TelegramClient:
                 discussion_group_id,
                 limit=10,  # Albums typically have < 10 items
                 min_id=max(1, linked_message_id - 10),
-                max_id=linked_message_id + 10
+                max_id=linked_message_id + 10,
             )
 
             # Find messages with the same grouped_id
-            grouped_msgs = [
-                msg for msg in group_messages
-                if msg and msg.grouped_id == linked_message.grouped_id
-            ]
+            grouped_msgs = [msg for msg in group_messages if msg and msg.grouped_id == linked_message.grouped_id]
 
             # Find the one with replies > 0
             for msg in grouped_msgs:
@@ -319,17 +340,19 @@ class TelegramClient:
 
             # Fetch replies
             try:
-                replies_result = await self.client(GetRepliesRequest(
-                    peer=discussion_group_id,
-                    msg_id=linked_message_id,
-                    offset_id=offset_id,
-                    offset_date=None,
-                    add_offset=0,
-                    limit=current_limit,
-                    max_id=0,
-                    min_id=0,
-                    hash=0
-                ))
+                replies_result = await self.client(
+                    GetRepliesRequest(
+                        peer=discussion_group_id,
+                        msg_id=linked_message_id,
+                        offset_id=offset_id,
+                        offset_date=None,
+                        add_offset=0,
+                        limit=current_limit,
+                        max_id=0,
+                        min_id=0,
+                        hash=0,
+                    )
+                )
             except Exception:
                 # Error fetching replies
                 break
@@ -376,14 +399,14 @@ class TelegramClient:
                     parts.append(message.sender.first_name)
                 if message.sender.last_name:
                     parts.append(message.sender.last_name)
-                sender_name = " ".join(parts) if parts else message.sender.username
-            elif hasattr(message.sender, "title"):
+                sender_name = ' '.join(parts) if parts else message.sender.username
+            elif hasattr(message.sender, 'title'):
                 sender_name = message.sender.title
 
         # Check if this comment is a reply to another comment
         is_reply_to_comment = False
         reply_to_comment_id = None
-        if message.reply_to and hasattr(message.reply_to, "reply_to_msg_id"):
+        if message.reply_to and hasattr(message.reply_to, 'reply_to_msg_id'):
             # If reply_to_msg_id is different from parent_message_id, it's a reply to another comment
             if message.reply_to.reply_to_msg_id != parent_message_id:
                 is_reply_to_comment = True
