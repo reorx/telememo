@@ -178,12 +178,17 @@ class TelegramService:
         since_date: Optional[datetime] = None,
         persist: bool = True,
         batch_size: int = 100,
+        offset_id: int = 0,
+        max_messages: Optional[int] = None,
     ) -> AsyncIterator[DisplayMessage]:
-        """Backfill recent messages, newest-first, stopping past the cutoff.
+        """Backfill messages, newest-first, stopping past the cutoff or the count limit.
 
         The cutoff is ``since_date`` if given, else ``now - since_days`` days. With
-        neither, all messages are pulled. When ``persist`` is True, messages are
-        stored through telememo's smart batch save (native columns only).
+        neither, all messages are pulled. ``offset_id`` starts iteration just *below* a
+        known message id (Telethon yields strictly-older messages) — pass the oldest
+        stored id to page further back into history. ``max_messages`` caps how many are
+        pulled. When ``persist`` is True, messages are stored through telememo's smart
+        batch save (native columns only).
 
         Yields grouped DisplayMessage objects (albums merged).
         """
@@ -199,7 +204,7 @@ class TelegramService:
         batch: list[MessageData] = []
         max_id = 0
 
-        async for md in self._iter_backfill(entity, cutoff):
+        async for md in self._iter_backfill(entity, cutoff, offset_id=offset_id, max_messages=max_messages):
             batch.append(md)
             max_id = max(max_id, md.id)
             if len(batch) >= batch_size:
@@ -215,15 +220,23 @@ class TelegramService:
             for dm in group_messages_to_display([_message_data_to_row(m) for m in batch]):
                 yield dm
 
-        if persist and max_id:
+        # Only a top-of-feed fetch advances the sync watermark; a backward (offset_id)
+        # historical fetch must not downgrade it to an older id.
+        if persist and max_id and not offset_id:
             db.update_channel_sync_status(channel_id, max_id)
 
-    async def _iter_backfill(self, entity, cutoff: Optional[datetime]) -> AsyncIterator[MessageData]:
-        """Iterate messages newest-first, stopping once older than cutoff.
+    async def _iter_backfill(
+        self,
+        entity,
+        cutoff: Optional[datetime],
+        offset_id: int = 0,
+        max_messages: Optional[int] = None,
+    ) -> AsyncIterator[MessageData]:
+        """Iterate messages newest-first from ``offset_id``, stopping at the cutoff or count.
 
         Retries with FloodWait backoff (the sanctioned exception for this layer).
         """
-        offset_id = 0
+        yielded = 0
         while True:
             try:
                 got_any = False
@@ -235,6 +248,9 @@ class TelegramService:
                     if cutoff is not None and message.date < cutoff:
                         return
                     yield convert_message_to_data(message)
+                    yielded += 1
+                    if max_messages is not None and yielded >= max_messages:
+                        return
                 # Exhausted the channel.
                 if not got_any:
                     return

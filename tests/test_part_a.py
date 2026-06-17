@@ -277,6 +277,36 @@ async def test_backfill_respects_since_days(mem_db):
 
 
 @pytest.mark.asyncio
+async def test_backfill_pages_older_with_offset_and_limit(mem_db):
+    """offset_id pages further back (strictly-older) and max_messages caps the pull;
+    a backward fetch must not downgrade the sync watermark."""
+    now = datetime.now(timezone.utc)
+    entity = Obj(id=1, title='A', username='a', date=None)
+    # full history newest-first: ids 50..41
+    history = [_raw(mid, now - timedelta(days=51 - mid)) for mid in range(50, 40, -1)]
+
+    async def fake_iter(entity, offset_id=0):
+        for m in history:
+            if offset_id and m.id >= offset_id:
+                continue  # Telethon's offset_id yields only messages older than it
+            yield m
+
+    fake = MagicMock()
+    fake.get_entity = AsyncMock(return_value=entity)
+    fake.iter_messages = MagicMock(side_effect=lambda entity, offset_id=0: fake_iter(entity, offset_id))
+
+    db.get_or_create_channel(ChannelInfo(id=1, title='A'))
+    db.update_channel_sync_status(1, 50)  # we already synced up to the newest
+
+    svc = TelegramService(1, 'h', client=fake)
+    # already have 50..46; page 3 older than 46 -> 45, 44, 43
+    got = [dm async for dm in svc.backfill(channel='a', offset_id=46, max_messages=3)]
+
+    assert [dm.id for dm in got] == [45, 44, 43]
+    assert db.get_channel(1).last_sync_message_id == 50  # backward fetch left the watermark alone
+
+
+@pytest.mark.asyncio
 async def test_subscribe_persists_and_dispatches(mem_db):
     db.get_or_create_channel(ChannelInfo(id=1, title='A'))
     captured = {}
