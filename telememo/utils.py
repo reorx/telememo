@@ -136,6 +136,9 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict 
                 text = msg['text']
                 break
 
+        # Link preview, if any message in the album carried one (rare for albums)
+        webpage = next((msg.get('webpage') for msg in group if msg.get('webpage')), None)
+
         # Aggregate stats
         views_list = [msg.get('views') for msg in group if msg.get('views')]
         forwards_list = [msg.get('forwards') for msg in group if msg.get('forwards')]
@@ -157,6 +160,7 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict 
             is_album=True,
             grouped_id=grouped_id,
             media_items=media_items,
+            webpage=webpage,
             is_forwarded=forward_info is not None,
             forward_info=forward_info,
             views=max_views,
@@ -189,6 +193,7 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict 
             is_album=False,
             grouped_id=None,
             media_items=media_items,
+            webpage=msg_dict.get('webpage'),
             is_forwarded=forward_info is not None,
             forward_info=forward_info,
             views=msg_dict.get('views'),

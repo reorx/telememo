@@ -67,6 +67,7 @@ def _message_data_to_row(md: MessageData) -> dict:
         'media_type': md.media_type,
         'has_media': md.has_media,
         'grouped_id': md.grouped_id,
+        'webpage': md.webpage,
         'is_forwarded': md.is_forwarded,
         'fwd_from_channel_id': md.fwd_from_channel_id,
         'fwd_from_channel_name': md.fwd_from_channel_name,

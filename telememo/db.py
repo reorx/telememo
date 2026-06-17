@@ -1,5 +1,6 @@
 """Database models and operations using Peewee ORM."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -63,6 +64,7 @@ class Message(BaseModel):
     media_type = CharField(null=True)
     has_media = BooleanField(default=False)
     grouped_id = IntegerField(null=True, index=True)
+    webpage = TextField(null=True)  # JSON-encoded WebPagePreview (URL link preview)
     # Forward source (A2; aligned with ForwardInfo)
     is_forwarded = BooleanField(default=False)
     fwd_from_channel_id = IntegerField(null=True)
@@ -229,6 +231,11 @@ def get_or_create_channel(channel_info: ChannelInfo) -> Channel:
     return channel
 
 
+def _webpage_json(message_data: MessageData) -> Optional[str]:
+    """Serialize a message's URL link preview to JSON text for storage, or None."""
+    return message_data.webpage.model_dump_json() if message_data.webpage else None
+
+
 def save_message(message_data: MessageData, dry_run: bool = False) -> Message | dict:
     """Save or update a message.
 
@@ -254,6 +261,7 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         'media_type': message_data.media_type,
         'has_media': message_data.has_media,
         'grouped_id': message_data.grouped_id,
+        'webpage': _webpage_json(message_data),
         'is_forwarded': message_data.is_forwarded,
         'fwd_from_channel_id': message_data.fwd_from_channel_id,
         'fwd_from_channel_name': message_data.fwd_from_channel_name,
@@ -281,6 +289,7 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         message.views = message_data.views
         message.forwards = message_data.forwards
         message.replies = message_data.replies
+        message.webpage = _webpage_json(message_data)
         message.update()
     return message
 
@@ -566,6 +575,7 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
             media_type=message_data.media_type,
             has_media=message_data.has_media,
             grouped_id=message_data.grouped_id,
+            webpage=_webpage_json(message_data),
             is_forwarded=message_data.is_forwarded,
             fwd_from_channel_id=message_data.fwd_from_channel_id,
             fwd_from_channel_name=message_data.fwd_from_channel_name,
@@ -587,6 +597,7 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
             views=message_data.views,
             forwards=message_data.forwards,
             replies=message_data.replies,
+            webpage=_webpage_json(message_data),
         ).where((Message.channel == message_data.channel_id) & (Message.id == message_data.id)).execute()
         # Update the existing object to reflect changes
         existing.text = message_data.text

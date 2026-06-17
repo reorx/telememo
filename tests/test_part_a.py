@@ -140,6 +140,58 @@ def test_forward_fields_persist_and_display(mem_db):
     assert displays[0].forward_info.from_channel_name == 'Origin'
 
 
+def test_convert_message_extracts_webpage():
+    from telethon.tl.types import MessageMediaWebPage, WebPage, WebPageEmpty
+
+    dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    wp = WebPage(
+        id=1,
+        url='https://example.com/post',
+        display_url='example.com/post',
+        hash=0,
+        site_name='Example',
+        title='A Title',
+        description='A description',
+        photo=Obj(),  # any non-None photo -> has_photo True
+    )
+    raw = _raw(7, dt, text='see https://example.com/post')
+    raw.media = MessageMediaWebPage(webpage=wp)
+
+    md = convert_message_to_data(raw)
+    assert md.media_type == 'webpage'
+    assert md.webpage is not None
+    assert md.webpage.url == 'https://example.com/post'
+    assert md.webpage.title == 'A Title'
+    assert md.webpage.site_name == 'Example'
+    assert md.webpage.has_photo is True
+
+    # An unresolved preview (empty/pending) carries no metadata -> no webpage.
+    raw.media = MessageMediaWebPage(webpage=WebPageEmpty(id=0))
+    assert convert_message_to_data(raw).webpage is None
+
+
+def test_webpage_persists_and_displays(mem_db):
+    from telememo.types import WebPagePreview
+
+    db.get_or_create_channel(ChannelInfo(id=1, title='A'))
+    dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    wp = WebPagePreview(url='https://x.com', title='T', site_name='X', has_photo=True)
+    md = _md(1, 20, dt, text='look', webpage=wp)
+    db.save_message_smart(md, None)
+
+    # Stored as JSON text in the native column.
+    row = db.get_message_by_id(1, 20)
+    import json
+
+    assert json.loads(row.webpage)['title'] == 'T'
+
+    # Carried onto the DisplayMessage.
+    displays = group_messages_to_display([_row(md)])
+    assert displays[0].webpage is not None
+    assert displays[0].webpage.url == 'https://x.com'
+    assert displays[0].webpage.has_photo is True
+
+
 def test_album_grouping_from_rows():
     dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
     a = _md(1, 10, dt, text=None, grouped_id=777, has_media=True, media_type='photo')

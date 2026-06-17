@@ -27,6 +27,23 @@ class ChannelInfo(BaseModel):
     created_at: Optional[datetime] = Field(default=None, description='Channel creation date')
 
 
+class WebPagePreview(BaseModel):
+    """Link (URL) preview attached to a message (Telegram ``MessageMediaWebPage``).
+
+    The preview image, when present (``has_photo``), is served by the on-demand media
+    proxy for the owning message id — Telethon resolves ``webpage.photo`` automatically.
+    """
+
+    url: Optional[str] = Field(default=None, description='Canonical link target')
+    display_url: Optional[str] = Field(default=None, description='Human-readable URL shown by Telegram')
+    type: Optional[str] = Field(default=None, description='Preview kind (article, photo, video, ...)')
+    site_name: Optional[str] = Field(default=None, description='Source site name')
+    title: Optional[str] = Field(default=None, description='Preview title')
+    description: Optional[str] = Field(default=None, description='Preview description')
+    author: Optional[str] = Field(default=None, description='Preview author')
+    has_photo: bool = Field(default=False, description='Whether the preview carries an image')
+
+
 class MessageData(BaseModel):
     """Telegram message data."""
 
@@ -44,6 +61,7 @@ class MessageData(BaseModel):
     media_type: Optional[str] = Field(default=None, description='Type of media (photo, video, etc)')
     has_media: bool = Field(default=False, description='Whether message has media')
     grouped_id: Optional[int] = Field(default=None, description='Grouped ID for media albums')
+    webpage: Optional[WebPagePreview] = Field(default=None, description='URL link preview, if any')
     # Forward source (filled from extract_forward_info; persisted to Message table)
     is_forwarded: bool = Field(default=False, description='Whether message is forwarded')
     fwd_from_channel_id: Optional[int] = Field(default=None, description='Original channel ID')
@@ -121,6 +139,9 @@ class DisplayMessage(BaseModel):
     is_album: bool = Field(default=False, description='Whether this is a media album')
     grouped_id: Optional[int] = Field(default=None, description='Grouped ID for media albums')
     media_items: List[MediaItem] = Field(default_factory=list, description='Media items in this message/album')
+
+    # URL link preview (Telegram web page preview), if the message carried one
+    webpage: Optional[WebPagePreview] = Field(default=None, description='URL link preview, if any')
 
     # Forward information
     is_forwarded: bool = Field(default=False, description='Whether this message is forwarded')

@@ -8,10 +8,32 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetDiscussionMessageRequest, GetRepliesRequest
 from telethon.tl.types import Channel as TgChannel
 from telethon.tl.types import Message as TgMessage
-from telethon.tl.types import User
+from telethon.tl.types import MessageMediaWebPage, User, WebPage
 
-from .types import ChannelInfo, MessageData, CommentData
+from .types import ChannelInfo, CommentData, MessageData, WebPagePreview
 from .utils import extract_forward_info
+
+
+def extract_webpage_preview(message: TgMessage) -> Optional[WebPagePreview]:
+    """Pull a URL link preview off a message, or None if it has no full web page.
+
+    Only a fully-resolved ``WebPage`` carries metadata; ``WebPageEmpty``/``WebPagePending``
+    have nothing to show and are treated as no preview.
+    """
+    media = message.media
+    if not isinstance(media, MessageMediaWebPage) or not isinstance(media.webpage, WebPage):
+        return None
+    wp = media.webpage
+    return WebPagePreview(
+        url=wp.url,
+        display_url=getattr(wp, 'display_url', None),
+        type=getattr(wp, 'type', None),
+        site_name=getattr(wp, 'site_name', None),
+        title=getattr(wp, 'title', None),
+        description=getattr(wp, 'description', None),
+        author=getattr(wp, 'author', None),
+        has_photo=getattr(wp, 'photo', None) is not None,
+    )
 
 
 def convert_channel_to_info(entity: TgChannel) -> ChannelInfo:
@@ -84,6 +106,9 @@ def convert_message_to_data(message: TgMessage) -> MessageData:
     # Extract forward source info (A2: persisted to the Message table)
     forward_info = extract_forward_info(message)
 
+    # Extract URL link preview (webpage), if present
+    webpage = extract_webpage_preview(message)
+
     return MessageData(
         id=message.id,
         channel_id=message.peer_id.channel_id,
@@ -99,6 +124,7 @@ def convert_message_to_data(message: TgMessage) -> MessageData:
         media_type=media_type,
         has_media=has_media,
         grouped_id=grouped_id,
+        webpage=webpage,
         is_forwarded=forward_info is not None,
         fwd_from_channel_id=forward_info.from_channel_id if forward_info else None,
         fwd_from_channel_name=forward_info.from_channel_name if forward_info else None,
