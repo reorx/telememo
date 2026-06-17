@@ -322,6 +322,17 @@ class TelegramService:
 
         return media_stream(), mime
 
+    async def get_channel_photo(self, channel: Union[str, int]) -> Optional[tuple[bytes, str]]:
+        """Return ``(jpeg_bytes, mime)`` for a channel's profile photo, or ``None`` if it has none.
+
+        Downloads the small variant; buffered fully (avatars are tiny) and never written to disk.
+        """
+        entity = await self.client.get_entity(_normalize_handle(channel))
+        data = await self.client.download_profile_photo(entity, file=bytes, download_big=False)
+        if data is None:
+            return None
+        return data, 'image/jpeg'
+
     async def __aenter__(self):
         await self.connect()
         return self
