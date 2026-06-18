@@ -63,6 +63,8 @@ class Message(BaseModel):
     edit_date = DateTimeField(null=True)
     media_type = CharField(null=True)
     has_media = BooleanField(default=False)
+    media_width = IntegerField(null=True)
+    media_height = IntegerField(null=True)
     grouped_id = IntegerField(null=True, index=True)
     webpage = TextField(null=True)  # JSON-encoded WebPagePreview (URL link preview)
     # Forward source (A2; aligned with ForwardInfo)
@@ -260,6 +262,8 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         'edit_date': message_data.edit_date,
         'media_type': message_data.media_type,
         'has_media': message_data.has_media,
+        'media_width': message_data.media_width,
+        'media_height': message_data.media_height,
         'grouped_id': message_data.grouped_id,
         'webpage': _webpage_json(message_data),
         'is_forwarded': message_data.is_forwarded,
@@ -574,6 +578,8 @@ def save_message_smart(message_data: MessageData, existing: Message | None) -> t
             edit_date=message_data.edit_date,
             media_type=message_data.media_type,
             has_media=message_data.has_media,
+            media_width=message_data.media_width,
+            media_height=message_data.media_height,
             grouped_id=message_data.grouped_id,
             webpage=_webpage_json(message_data),
             is_forwarded=message_data.is_forwarded,

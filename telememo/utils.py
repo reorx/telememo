@@ -123,7 +123,13 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict 
         media_items = []
         for msg in group:
             media_items.append(
-                MediaItem(message_id=msg['id'], media_type=msg.get('media_type'), has_media=msg.get('has_media', False))
+                MediaItem(
+                    message_id=msg['id'],
+                    media_type=msg.get('media_type'),
+                    has_media=msg.get('has_media', False),
+                    width=msg.get('media_width'),
+                    height=msg.get('media_height'),
+                )
             )
 
         # Get forward info from first message (raw message or stored columns)
@@ -178,7 +184,13 @@ def group_messages_to_display(message_dicts: List[Dict], raw_messages_map: Dict 
         media_items = []
         if msg_dict.get('has_media'):
             media_items.append(
-                MediaItem(message_id=msg_dict['id'], media_type=msg_dict.get('media_type'), has_media=True)
+                MediaItem(
+                    message_id=msg_dict['id'],
+                    media_type=msg_dict.get('media_type'),
+                    has_media=True,
+                    width=msg_dict.get('media_width'),
+                    height=msg_dict.get('media_height'),
+                )
             )
 
         display_msg = DisplayMessage(

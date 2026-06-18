@@ -89,6 +89,15 @@ def convert_message_to_data(message: TgMessage) -> MessageData:
     if has_media and message.media:
         media_type = message.media.__class__.__name__.replace('MessageMedia', '').lower()
 
+    # Pixel dimensions for photo/video media; Telethon exposes both on .file
+    # (PhotoSize.w/h for photos, DocumentAttributeVideo.w/h for videos). No network call.
+    media_width = None
+    media_height = None
+    file = getattr(message, 'file', None)
+    if file is not None:
+        media_width = getattr(file, 'width', None)
+        media_height = getattr(file, 'height', None)
+
     # Get message stats
     views = message.views if hasattr(message, 'views') else None
     forwards = message.forwards if hasattr(message, 'forwards') else None
@@ -123,6 +132,8 @@ def convert_message_to_data(message: TgMessage) -> MessageData:
         edit_date=message.edit_date,
         media_type=media_type,
         has_media=has_media,
+        media_width=media_width,
+        media_height=media_height,
         grouped_id=grouped_id,
         webpage=webpage,
         is_forwarded=forward_info is not None,

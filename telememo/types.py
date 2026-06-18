@@ -60,6 +60,8 @@ class MessageData(BaseModel):
     edit_date: Optional[datetime] = Field(default=None, description='Last edit date')
     media_type: Optional[str] = Field(default=None, description='Type of media (photo, video, etc)')
     has_media: bool = Field(default=False, description='Whether message has media')
+    media_width: Optional[int] = Field(default=None, description='Pixel width of the media (photo/video), if known')
+    media_height: Optional[int] = Field(default=None, description='Pixel height of the media (photo/video), if known')
     grouped_id: Optional[int] = Field(default=None, description='Grouped ID for media albums')
     webpage: Optional[WebPagePreview] = Field(default=None, description='URL link preview, if any')
     # Forward source (filled from extract_forward_info; persisted to Message table)
@@ -96,6 +98,8 @@ class MediaItem(BaseModel):
     message_id: int = Field(description='Message ID of this media item')
     media_type: Optional[str] = Field(default=None, description='Type of media (photo, video, etc)')
     has_media: bool = Field(default=False, description='Whether this item has media')
+    width: Optional[int] = Field(default=None, description='Pixel width of the media, if known')
+    height: Optional[int] = Field(default=None, description='Pixel height of the media, if known')
 
 
 class ForwardInfo(BaseModel):
