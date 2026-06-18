@@ -18,13 +18,25 @@ Telememo is a Python CLI tool to dump Telegram channel messages to a local SQLit
 
 ## Installation
 
+Install from PyPI:
+```bash
+pip install telememo
+```
+
+Or as an isolated CLI tool with [uv](https://docs.astral.sh/uv/):
+```bash
+uv tool install telememo
+```
+
+### From source (development)
+
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/reorx/telememo
 cd telememo
 ```
 
-2. Install in development mode:
+2. Install in editable mode:
 ```bash
 pip install -e .
 ```
