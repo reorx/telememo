@@ -27,7 +27,8 @@ from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 from . import db
-from .telegram import convert_channel_to_info, convert_message_to_data
+from .entity_cache import EntityNameCache
+from .telegram import convert_channel_to_info, convert_message_to_data, resolve_forward_entity_names
 from .types import ChannelInfo, DisplayMessage, MessageData, SignInResult
 from .utils import group_messages_to_display
 
@@ -97,6 +98,7 @@ class TelegramService:
         api_hash: str,
         session: Optional[str] = None,
         client: Optional[TelethonClient] = None,
+        entity_cache: Optional[EntityNameCache] = None,
     ):
         """Build the facade.
 
@@ -104,6 +106,8 @@ class TelegramService:
             api_id / api_hash: Telegram app credentials (my.telegram.org).
             session: Telethon StringSession string; None means not yet logged in.
             client: Optional pre-built client, mainly for testing/injection.
+            entity_cache: Optional persistent name cache used to fill forward
+                source names on ingest. ``None`` disables name resolution.
         """
         self.api_id = api_id
         self.api_hash = api_hash
@@ -121,6 +125,7 @@ class TelegramService:
         self._phone: Optional[str] = None
         self._subscription_handler = None
         self._subscribed_chats: list[int] = []
+        self._entity_cache = entity_cache
 
     async def connect(self) -> None:
         """Establish the connection without triggering interactive auth."""
@@ -249,7 +254,9 @@ class TelegramService:
                     offset_id = message.id
                     if cutoff is not None and message.date < cutoff:
                         return
-                    yield convert_message_to_data(message)
+                    md = convert_message_to_data(message)
+                    await resolve_forward_entity_names(md, self.client, self._entity_cache, allow_network=True)
+                    yield md
                     yielded += 1
                     if max_messages is not None and yielded >= max_messages:
                         return
@@ -304,6 +311,10 @@ class TelegramService:
     async def _handle_new_message(self, message, on_message: Optional[OnMessage], persist: bool) -> None:
         """Convert + persist + dispatch a single realtime message."""
         md = convert_message_to_data(message)
+        # Realtime path stays cache-only: no FloodWait retry exists here, and a
+        # blocking get_entity could stall the event loop. Backfill resolves the
+        # network-misses for us, and the cache feeds future realtime arrivals.
+        await resolve_forward_entity_names(md, self.client, self._entity_cache, allow_network=False)
         if persist:
             existing = db.get_message_by_id(md.channel_id, md.id)
             db.save_message_smart(md, existing)

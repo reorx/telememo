@@ -6,8 +6,31 @@ from collections import defaultdict
 from telememo.types import DisplayMessage, MediaItem, ForwardInfo
 
 
+def _display_name_from_user(user) -> str | None:
+    """Build a human-readable display name from a Telethon User-like object."""
+    if user is None:
+        return None
+    parts = []
+    first = getattr(user, 'first_name', None)
+    last = getattr(user, 'last_name', None)
+    if first:
+        parts.append(first)
+    if last:
+        parts.append(last)
+    if parts:
+        return ' '.join(parts)
+    username = getattr(user, 'username', None)
+    return username or None
+
+
 def extract_forward_info(raw_message) -> ForwardInfo | None:
     """Extract forward information from a raw Telegram message.
+
+    Names for visible forwards are pulled from Telethon's resolved entities
+    (``raw_message.forward.chat`` / ``raw_message.forward.sender``), which travel
+    with the message in the same API response — no extra ``get_entity`` call.
+    The hidden-source ``fwd.from_name`` is kept as a fallback for forwards whose
+    origin is concealed.
 
     Args:
         raw_message: Raw Telethon message object
@@ -21,32 +44,42 @@ def extract_forward_info(raw_message) -> ForwardInfo | None:
     fwd = raw_message.fwd_from
     forward_info = ForwardInfo()
 
-    # Extract channel info
+    # Extract channel/user id from from_id (Peer)
     if hasattr(fwd, 'from_id'):
         from_id = fwd.from_id
-        # Check if it's a channel
         if hasattr(from_id, 'channel_id'):
             forward_info.from_channel_id = from_id.channel_id
-            # Try to get channel name if available
+            # Legacy/hidden path: some Telethon variants expose forward_header.from_name
             if hasattr(raw_message, 'forward_header') and hasattr(raw_message.forward_header, 'from_name'):
                 forward_info.from_channel_name = raw_message.forward_header.from_name
-        # Check if it's a user
         elif hasattr(from_id, 'user_id'):
             forward_info.from_user_id = from_id.user_id
 
-    # Extract from_name (hidden forward source)
-    if hasattr(fwd, 'from_name') and fwd.from_name:
+    # Fill names from resolved entities Telethon already returned with the message.
+    # Visible-entity name wins over the legacy/hidden fallback.
+    forward = getattr(raw_message, 'forward', None)
+    if forward is not None:
+        chat = getattr(forward, 'chat', None)
+        if chat is not None:
+            title = getattr(chat, 'title', None)
+            if title:
+                forward_info.from_channel_name = title
+        sender = getattr(forward, 'sender', None)
+        if sender is not None:
+            name = _display_name_from_user(sender)
+            if name:
+                forward_info.from_user_name = name
+
+    # Hidden-sender fallback (only fills when the visible-entity path didn't)
+    if not forward_info.from_user_name and getattr(fwd, 'from_name', None):
         forward_info.from_user_name = fwd.from_name
 
-    # Extract original date
     if hasattr(fwd, 'date'):
         forward_info.original_date = fwd.date
 
-    # Extract original message ID
     if hasattr(fwd, 'channel_post'):
         forward_info.from_message_id = fwd.channel_post
 
-    # Extract post author
     if hasattr(fwd, 'post_author') and fwd.post_author:
         forward_info.post_author = fwd.post_author
 

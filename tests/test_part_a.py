@@ -47,7 +47,7 @@ def _row(md: MessageData) -> dict:
     return _message_data_to_row(md)
 
 
-def _raw(mid, date, channel_id=1, text='t', fwd_from=None):
+def _raw(mid, date, channel_id=1, text='t', fwd_from=None, forward=None):
     kw = dict(
         id=mid,
         peer_id=Obj(channel_id=channel_id),
@@ -62,6 +62,8 @@ def _raw(mid, date, channel_id=1, text='t', fwd_from=None):
     )
     if fwd_from is not None:
         kw['fwd_from'] = fwd_from
+    if forward is not None:
+        kw['forward'] = forward
     return Obj(**kw)
 
 
@@ -122,6 +124,35 @@ def test_convert_message_extracts_forward():
     assert md.fwd_from_message_id == 999
     assert md.fwd_post_author == 'auth'
     assert md.fwd_original_date == dt
+
+
+def test_convert_message_resolves_visible_channel_name():
+    """Visible-channel forwards pick the name from message.forward.chat.title."""
+    dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    fwd = Obj(from_id=Obj(channel_id=555), date=dt, channel_post=999)
+    forward = Obj(chat=Obj(title='Origin Chan'), sender=None)
+    md = convert_message_to_data(_raw(5, dt, fwd_from=fwd, forward=forward))
+    assert md.fwd_from_channel_id == 555
+    assert md.fwd_from_channel_name == 'Origin Chan'
+
+
+def test_convert_message_resolves_visible_user_name():
+    """Visible-user forwards build the name from message.forward.sender."""
+    dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    fwd = Obj(from_id=Obj(user_id=42), date=dt)
+    forward = Obj(chat=None, sender=Obj(first_name='Alice', last_name='B', username='ab'))
+    md = convert_message_to_data(_raw(5, dt, fwd_from=fwd, forward=forward))
+    assert md.fwd_from_user_id == 42
+    assert md.fwd_from_user_name == 'Alice B'
+
+
+def test_convert_message_keeps_hidden_sender_name():
+    """Hidden forwards (no visible entity) still fall back to fwd_from.from_name."""
+    dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    fwd = Obj(from_name='Anon', date=dt)
+    md = convert_message_to_data(_raw(5, dt, fwd_from=fwd))
+    assert md.is_forwarded is True
+    assert md.fwd_from_user_name == 'Anon'
 
 
 def test_forward_fields_persist_and_display(mem_db):

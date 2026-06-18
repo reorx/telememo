@@ -10,8 +10,9 @@ from telethon.tl.types import Channel as TgChannel
 from telethon.tl.types import Message as TgMessage
 from telethon.tl.types import MessageMediaWebPage, User, WebPage
 
+from .entity_cache import EntityNameCache
 from .types import ChannelInfo, CommentData, MessageData, WebPagePreview
-from .utils import extract_forward_info
+from .utils import _display_name_from_user, extract_forward_info
 
 
 def extract_webpage_preview(message: TgMessage) -> Optional[WebPagePreview]:
@@ -145,6 +146,59 @@ def convert_message_to_data(message: TgMessage) -> MessageData:
         fwd_original_date=forward_info.original_date if forward_info else None,
         fwd_post_author=forward_info.post_author if forward_info else None,
     )
+
+
+async def resolve_forward_entity_names(
+    md: MessageData,
+    client,
+    cache: Optional[EntityNameCache],
+    allow_network: bool,
+) -> None:
+    """Best-effort backfill of ``fwd_from_channel_name`` / ``fwd_from_user_name``.
+
+    Three-tier cascade:
+
+    1. If extraction already set a name (from Telethon's resolved entities),
+       opportunistically prime ``cache`` for future messages — no client call.
+    2. Otherwise consult ``cache``.
+    3. Otherwise, when ``allow_network`` is true, ``await client.get_entity(id)``
+       to resolve the name and persist it to ``cache``. Realtime ingest should
+       pass ``allow_network=False`` to avoid FloodWait crashes in the event
+       handler; backfill (which has FloodWait retry orchestration) passes True.
+
+    Mutates ``md`` in place. Exceptions from ``get_entity`` bubble up to the
+    caller's FloodWait/retry layer.
+    """
+    if not md.is_forwarded or cache is None:
+        return
+
+    if md.fwd_from_channel_id:
+        if md.fwd_from_channel_name:
+            cache.set_channel(md.fwd_from_channel_id, md.fwd_from_channel_name)
+        else:
+            hit, name = cache.get_channel(md.fwd_from_channel_id)
+            if hit:
+                md.fwd_from_channel_name = name
+            elif allow_network:
+                entity = await client.get_entity(md.fwd_from_channel_id)
+                title = getattr(entity, 'title', None)
+                if title:
+                    md.fwd_from_channel_name = title
+                    cache.set_channel(md.fwd_from_channel_id, title)
+
+    if md.fwd_from_user_id:
+        if md.fwd_from_user_name:
+            cache.set_user(md.fwd_from_user_id, md.fwd_from_user_name)
+        else:
+            hit, name = cache.get_user(md.fwd_from_user_id)
+            if hit:
+                md.fwd_from_user_name = name
+            elif allow_network:
+                entity = await client.get_entity(md.fwd_from_user_id)
+                name = _display_name_from_user(entity)
+                if name:
+                    md.fwd_from_user_name = name
+                    cache.set_user(md.fwd_from_user_id, name)
 
 
 class TelegramClient:
