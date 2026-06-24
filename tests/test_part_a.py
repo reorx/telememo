@@ -365,6 +365,43 @@ async def test_subscribe_persists_and_dispatches(mem_db):
 
 
 @pytest.mark.asyncio
+async def test_subscribe_handles_new_and_edited(mem_db):
+    """subscribe wires both NewMessage and MessageEdited; an edit updates text in place."""
+    from telethon import events
+
+    db.get_or_create_channel(ChannelInfo(id=1, title='A'))
+    handlers = {}
+
+    def add_handler(cb, event):
+        handlers[type(event).__name__] = cb
+
+    fake = MagicMock()
+    fake.add_event_handler = MagicMock(side_effect=add_handler)
+
+    svc = TelegramService(1, 'h', client=fake)
+    received = []
+
+    async def on_msg(dm):
+        received.append(dm)
+
+    await svc.subscribe([1], on_message=on_msg)
+    assert {'NewMessage', 'MessageEdited'} <= set(handlers)
+    assert handlers['NewMessage'] is handlers['MessageEdited']  # one handler, both events
+
+    now = datetime.now(timezone.utc)
+    await handlers['NewMessage'](Obj(message=_raw(100, now, text='original')))
+    assert db.get_message_by_id(1, 100).text == 'original'
+
+    # an edit on the same id (newer edit_date) updates the stored text in place
+    edited = _raw(100, now, text='EDITED')
+    edited.edit_date = now + timedelta(minutes=5)
+    await handlers['MessageEdited'](Obj(message=edited))
+
+    assert db.get_message_by_id(1, 100).text == 'EDITED'
+    assert [dm.id for dm in received] == [100, 100]  # dispatched for the new + the edit
+
+
+@pytest.mark.asyncio
 async def test_get_media_thumb_and_full():
     raw = Obj(media=Obj(), file=Obj(mime_type='image/png'))
     fake = MagicMock()

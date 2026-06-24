@@ -5,7 +5,7 @@ application (condenser):
 
 - programmatic step-by-step auth (code + optional 2FA) instead of interactive start
 - recent-N-days backfill via offset_date
-- realtime ``events.NewMessage`` subscription
+- realtime ``events.NewMessage`` + ``events.MessageEdited`` subscription
 - on-demand media streaming (no disk persistence)
 
 Session state travels in and out as a Telethon StringSession string; persisting
@@ -275,11 +275,15 @@ class TelegramService:
         on_message: Optional[OnMessage] = None,
         persist: bool = True,
     ) -> None:
-        """Register a realtime ``NewMessage`` listener for ``channels``.
+        """Register a realtime ``NewMessage`` + ``MessageEdited`` listener for ``channels``.
 
-        New messages are persisted (when ``persist``) and passed to ``on_message``
-        as a single-message DisplayMessage. Returns immediately; events fire on the
-        shared event loop while the client stays connected.
+        New messages **and edits** are persisted (when ``persist``) and passed to
+        ``on_message`` as a single-message DisplayMessage. Returns immediately; events fire
+        on the shared event loop while the client stays connected. The same handler serves
+        both events — ``_handle_new_message`` smart-saves either (``save_message_smart``
+        updates the row's text/edit_date when the edit_date changed), so an edited channel
+        post updates its stored text and re-dispatches for downstream re-processing (e.g.
+        condenser re-running its keyword filter).
         """
         self._subscribed_chats = list(channels)
 
@@ -288,13 +292,16 @@ class TelegramService:
 
         self._subscription_handler = handler
         self.client.add_event_handler(handler, events.NewMessage(chats=channels))
+        self.client.add_event_handler(handler, events.MessageEdited(chats=channels))
 
     async def update_subscription(self, channels: list[int]) -> None:
-        """Adjust the set of chats the realtime listener watches."""
+        """Adjust the set of chats the realtime listener watches (NewMessage + MessageEdited)."""
         if self._subscription_handler is not None:
+            # event=None removes every registration of this callback (both event types).
             self.client.remove_event_handler(self._subscription_handler)
         self._subscribed_chats = list(channels)
         self.client.add_event_handler(self._subscription_handler, events.NewMessage(chats=channels))
+        self.client.add_event_handler(self._subscription_handler, events.MessageEdited(chats=channels))
 
     async def unsubscribe(self) -> None:
         """Remove the realtime listener (e.g. when no channels remain enabled)."""
@@ -309,7 +316,11 @@ class TelegramService:
         return self._subscription_handler is not None
 
     async def _handle_new_message(self, message, on_message: Optional[OnMessage], persist: bool) -> None:
-        """Convert + persist + dispatch a single realtime message."""
+        """Convert + persist + dispatch a single realtime message (new or edited).
+
+        Serves both NewMessage and MessageEdited: ``save_message_smart`` inserts a new row or,
+        when the edit_date changed, updates the existing row's text/edit_date/stats in place.
+        """
         md = convert_message_to_data(message)
         # Realtime path stays cache-only: no FloodWait retry exists here, and a
         # blocking get_entity could stall the event loop. Backfill resolves the
