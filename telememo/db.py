@@ -238,17 +238,13 @@ def _webpage_json(message_data: MessageData) -> Optional[str]:
     return message_data.webpage.model_dump_json() if message_data.webpage else None
 
 
-def save_message(message_data: MessageData, dry_run: bool = False) -> Message | dict:
-    """Save or update a message.
+def _message_row(message_data: MessageData) -> dict:
+    """Build the full column dict for a message row (all data columns except created_at).
 
-    Args:
-        message_data: Message data to save
-        dry_run: If True, return data dict without saving to database
-
-    Returns:
-        Message object if dry_run=False, dict if dry_run=True
+    Single source of truth shared by INSERT and UPDATE paths — when adding a new
+    column to the Message model, add it here once and both paths stay in sync.
     """
-    data = {
+    return {
         'channel': message_data.channel_id,
         'id': message_data.id,
         'text': message_data.text,
@@ -275,6 +271,19 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
         'fwd_original_date': message_data.fwd_original_date,
         'fwd_post_author': message_data.fwd_post_author,
     }
+
+
+def save_message(message_data: MessageData, dry_run: bool = False) -> Message | dict:
+    """Save or update a message.
+
+    Args:
+        message_data: Message data to save
+        dry_run: If True, return data dict without saving to database
+
+    Returns:
+        Message object if dry_run=False, dict if dry_run=True
+    """
+    data = _message_row(message_data)
 
     if dry_run:
         return data
@@ -552,79 +561,49 @@ def get_messages_by_ids(channel_id: int, message_ids: list[int]) -> dict[int, Me
     return {msg.id: msg for msg in messages}
 
 
-def save_message_smart(message_data: MessageData, existing: Message | None) -> tuple[Message, str]:
+def save_message_smart(message_data: MessageData, existing: Message | None, force: bool = False) -> tuple[Message, str]:
     """Smart save: only update if edit_date changed (skip if both NULL).
 
     Args:
         message_data: New message data from Telegram
         existing: Existing message from DB (if any)
+        force: If True, unconditionally update all data columns of an existing row
+            (used by full sync to backfill columns added after initial ingest)
 
     Returns:
         (message, status) where status is 'added', 'updated', or 'unchanged'
     """
     if existing is None:
         # New message - insert
-        message = Message.create(
-            channel=message_data.channel_id,
-            id=message_data.id,
-            text=message_data.text,
-            date=message_data.date,
-            sender_id=message_data.sender_id,
-            sender_name=message_data.sender_name,
-            views=message_data.views,
-            forwards=message_data.forwards,
-            replies=message_data.replies,
-            is_edited=message_data.is_edited,
-            edit_date=message_data.edit_date,
-            media_type=message_data.media_type,
-            has_media=message_data.has_media,
-            media_width=message_data.media_width,
-            media_height=message_data.media_height,
-            grouped_id=message_data.grouped_id,
-            webpage=_webpage_json(message_data),
-            is_forwarded=message_data.is_forwarded,
-            fwd_from_channel_id=message_data.fwd_from_channel_id,
-            fwd_from_channel_name=message_data.fwd_from_channel_name,
-            fwd_from_user_id=message_data.fwd_from_user_id,
-            fwd_from_user_name=message_data.fwd_from_user_name,
-            fwd_from_message_id=message_data.fwd_from_message_id,
-            fwd_original_date=message_data.fwd_original_date,
-            fwd_post_author=message_data.fwd_post_author,
-        )
+        message = Message.create(**_message_row(message_data))
         return message, 'added'
 
     # Check if we should update
-    if should_update_record(message_data.edit_date, existing.edit_date):
-        # Update existing message using UPDATE query (can't use save() with composite PK)
-        Message.update(
-            text=message_data.text,
-            is_edited=message_data.is_edited,
-            edit_date=message_data.edit_date,
-            views=message_data.views,
-            forwards=message_data.forwards,
-            replies=message_data.replies,
-            webpage=_webpage_json(message_data),
-        ).where((Message.channel == message_data.channel_id) & (Message.id == message_data.id)).execute()
+    if force or should_update_record(message_data.edit_date, existing.edit_date):
+        # Update all data columns using UPDATE query (can't use save() with composite PK);
+        # extension columns added via optional_fields are untouched
+        row = _message_row(message_data)
+        del row['channel'], row['id']
+        Message.update(**row).where(
+            (Message.channel == message_data.channel_id) & (Message.id == message_data.id)
+        ).execute()
         # Update the existing object to reflect changes
-        existing.text = message_data.text
-        existing.is_edited = message_data.is_edited
-        existing.edit_date = message_data.edit_date
-        existing.views = message_data.views
-        existing.forwards = message_data.forwards
-        existing.replies = message_data.replies
+        for field, value in row.items():
+            setattr(existing, field, value)
         return existing, 'updated'
 
     return existing, 'unchanged'
 
 
 def save_messages_batch_smart(
-    message_datas: list[MessageData], existing_messages: dict[int, Message]
+    message_datas: list[MessageData], existing_messages: dict[int, Message], force: bool = False
 ) -> tuple[list[Message], int, int, int]:
     """Batch save messages with smart comparison.
 
     Args:
         message_datas: List of message data from Telegram
         existing_messages: Dict mapping message_id to existing Message
+        force: If True, unconditionally update all data columns of existing rows
 
     Returns:
         (messages, added_count, updated_count, unchanged_count)
@@ -637,7 +616,7 @@ def save_messages_batch_smart(
     with db.atomic():
         for msg_data in message_datas:
             existing = existing_messages.get(msg_data.id)
-            message, status = save_message_smart(msg_data, existing)
+            message, status = save_message_smart(msg_data, existing, force=force)
             messages.append(message)
             if status == 'added':
                 added += 1

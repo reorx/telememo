@@ -122,6 +122,13 @@ Fetch only new messages since last sync:
 telememo -c @channelname sync
 ```
 
+Full sync re-fetches all messages and overwrites all data columns of existing
+rows. If your database was created before columns like `webpage` (link preview)
+or `fwd_*` (forward source) were added, run it once to backfill them:
+```bash
+telememo -c @channelname sync --full
+```
+
 ### Show channel information
 
 ```bash

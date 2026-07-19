@@ -98,7 +98,11 @@ def dump_messages(ctx, limit: int):
 @cli.command()
 @click.option('--skip-comments', is_flag=True, help='Only sync messages, skip fetching comments')
 @click.option('--limit', '-l', type=int, default=100, help='Max messages in refresh mode (default: 100)')
-@click.option('--full', is_flag=True, help='Fetch all messages from channel start')
+@click.option(
+    '--full',
+    is_flag=True,
+    help='Fetch all messages from channel start and overwrite all columns of existing rows (backfills new columns)',
+)
 @click.pass_context
 def sync(ctx, skip_comments: bool, limit: int, full: bool):
     """Sync messages and comments from a channel with smart updates.
@@ -109,7 +113,9 @@ def sync(ctx, skip_comments: bool, limit: int, full: bool):
     3. Only update records when edit_date is different
     4. Only fetch comments when replies count differs
 
-    Use --full to re-fetch all messages from the beginning.
+    Use --full to re-fetch all messages from the beginning; existing rows get
+    all data columns overwritten (use this to backfill columns added by
+    schema migrations, e.g. webpage / forward source).
     Use --skip-comments to sync only messages.
     Use --limit to change refresh limit (default: 100).
     """

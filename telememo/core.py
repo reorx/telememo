@@ -150,7 +150,8 @@ class Scraper:
 
         Full sync mode (--full):
         1. Fetch all messages from the beginning
-        2. Smart update based on edit_date comparison
+        2. Force update all data columns of existing rows (backfills columns
+           added after initial ingest, e.g. webpage / fwd_*)
 
         Comment sync:
         - Only fetch comments when message's replies count differs from DB
@@ -206,7 +207,7 @@ class Scraper:
             existing_messages = db.get_messages_by_ids(channel_info.id, message_ids)
 
             # Smart batch save
-            _, added, updated, unchanged = db.save_messages_batch_smart(fetched_messages, existing_messages)
+            _, added, updated, unchanged = db.save_messages_batch_smart(fetched_messages, existing_messages, force=full)
             result.messages_added = added
             result.messages_updated = updated
             result.messages_unchanged = unchanged
