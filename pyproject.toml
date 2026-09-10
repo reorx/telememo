@@ -37,7 +37,9 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "telethon>=1.42.0,<2.0.0",
+    # >=1.44.0: session schema v8 adds the `tmp_auth_key` column; older
+    # telethon cannot read a session file once 1.44 has upgraded it.
+    "telethon>=1.44.0,<2.0.0",
     "peewee>=3.18.0,<4.0.0",
     "click>=8.1.0,<9.0.0",
     "pydantic>=2.5.0,<3.0.0",
