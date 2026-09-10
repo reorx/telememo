@@ -16,7 +16,7 @@ from telethon.tl.types import Message as TgMessage
 from telethon.tl.types import MessageMediaWebPage, User, WebPage
 
 from .entity_cache import EntityNameCache
-from .types import ChannelInfo, CommentData, MessageData, WebPagePreview
+from .types import ChannelInfo, CommentData, MessageData, SessionStatus, WebPagePreview
 from .utils import _display_name_from_user, extract_forward_info
 
 
@@ -77,6 +77,54 @@ def check_session_compatibility(session_name: str) -> None:
         f'`uv tool upgrade telememo` for a global install) — or delete the session file to '
         f'log in again from scratch.'
     )
+
+
+def inspect_session_file(session_name: str) -> SessionStatus:
+    """Report what the session file on disk looks like, without any network use."""
+    path = resolve_session_path(session_name)
+    if path is None:
+        return SessionStatus(
+            path=session_name or ':memory:',
+            exists=False,
+            supported_schema_version=SESSION_CURRENT_VERSION,
+            telethon_version=telethon.__version__,
+            compatible=True,
+        )
+    version = read_session_version(path)
+    return SessionStatus(
+        path=str(path),
+        exists=path.exists(),
+        schema_version=version,
+        supported_schema_version=SESSION_CURRENT_VERSION,
+        telethon_version=telethon.__version__,
+        compatible=version is None or version <= SESSION_CURRENT_VERSION,
+    )
+
+
+async def inspect_session(session_name: str, api_id: int, api_hash: str) -> SessionStatus:
+    """Report the session file *and* whether Telegram still honours it.
+
+    Connects but never logs in, so running this never sends a login code. The
+    authorization probe is skipped when there is no readable session to probe —
+    that keeps the diagnostic usable in exactly the case it is needed most, a
+    file the installed Telethon cannot open.
+    """
+    status = inspect_session_file(session_name)
+    if not status.exists or not status.compatible:
+        return status
+
+    client = TelethonClient(session_name, api_id, api_hash)
+    await client.connect()
+    try:
+        status.authorized = await client.is_user_authorized()
+        if status.authorized:
+            me = await client.get_me()
+            status.user_id = me.id
+            status.username = me.username
+            status.phone = me.phone
+    finally:
+        await client.disconnect()
+    return status
 
 
 def extract_webpage_preview(message: TgMessage) -> Optional[WebPagePreview]:

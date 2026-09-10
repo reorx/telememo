@@ -162,6 +162,31 @@ class DisplayMessage(BaseModel):
     )
 
 
+class SessionStatus(BaseModel):
+    """Diagnostics for the Telethon session file.
+
+    Separates the two independent ways a session stops working: the file being
+    unreadable by the installed Telethon (`compatible`), and Telegram no longer
+    honouring the stored authorization (`authorized`).
+    """
+
+    path: str = Field(description='Session file Telethon opens for this session name')
+    exists: bool = Field(description='Whether that file is on disk')
+    schema_version: Optional[int] = Field(
+        default=None, description='Schema version stamped in the file; None if absent or unreadable'
+    )
+    supported_schema_version: int = Field(description='Schema version the installed Telethon understands')
+    telethon_version: str = Field(description='Installed Telethon version')
+    compatible: bool = Field(description='Whether the installed Telethon can open this file')
+
+    authorized: Optional[bool] = Field(
+        default=None, description='Whether Telegram still honours the session; None if not checked'
+    )
+    user_id: Optional[int] = Field(default=None, description='Logged-in account ID')
+    username: Optional[str] = Field(default=None, description='Logged-in account username')
+    phone: Optional[str] = Field(default=None, description='Logged-in account phone')
+
+
 class SignInResult(BaseModel):
     """Result of a programmatic sign-in step.
 

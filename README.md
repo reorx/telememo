@@ -36,15 +36,26 @@ git clone https://github.com/reorx/telememo
 cd telememo
 ```
 
-2. Install in editable mode:
+2. Install dependencies, including the test tools:
 ```bash
-pip install -e .
+uv sync --extra dev
 ```
 
-For development with testing tools:
+3. Point the global `telememo` command at your checkout, so the CLI you use day
+   to day is the code you are editing:
 ```bash
-pip install -e ".[dev]"
+uv tool install --force --editable .
 ```
+
+**Re-run step 3 after changing `[project.scripts]` or `dependencies` in
+`pyproject.toml`.** Editable mode keeps *source* changes live, but the console
+script and the resolved dependencies are snapshots taken at install time. Skip
+it and the global `telememo` silently keeps the old entry point — or an old
+Telethon, while `uv run telememo` inside the repo uses the new one. Two Telethon
+versions sharing one session file is how you get
+`ValueError: too many values to unpack`: the newer one upgrades
+`~/.local/share/telememo/telethon.session` to a schema the older one cannot
+read. `telememo session` diagnoses exactly that.
 
 ## Configuration
 
@@ -96,6 +107,8 @@ When you run the CLI for the first time, you'll be prompted to:
 
 Your session will be saved locally in `~/.local/share/telememo/telethon.session` so you won't need to authenticate again. This session file is shared across all channels.
 
+If commands start failing with an authentication or session error, run `telememo session` (see [Check session status](#check-session-status)) to find out which of the two causes it is.
+
 ## Usage
 
 ### Dump channel messages
@@ -141,6 +154,26 @@ Search within a specific channel:
 ```bash
 telememo -c @channelname search "search term" --limit 20
 ```
+
+### Check session status
+
+```bash
+telememo session
+```
+
+Reports the session file, its schema version, and whether Telegram still honours
+the stored login. It connects but never logs in, so running it never sends you a
+verification code.
+
+Use it to tell apart the two independent ways a session stops working — they look
+the same from the outside but have opposite fixes:
+
+| Output | Meaning | Fix |
+|---|---|---|
+| `Compatible: NO` | The file was written by a newer Telethon than the one installed, which can only *upgrade* an older schema | Upgrade Telethon (`uv sync`, or `uv tool upgrade telememo`) |
+| `Authorized: NO` | Telegram revoked the session (terminated from another device, or long inactivity) | Run `telememo sync` and log in again |
+
+Exits non-zero when either check fails, so it works in a health check.
 
 ## Project Structure
 

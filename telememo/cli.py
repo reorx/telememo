@@ -10,8 +10,8 @@ import click
 
 from . import color, config, db
 from .core import Scraper, SyncResult
-from .telegram import SessionVersionError
-from .types import Config
+from .telegram import SessionVersionError, inspect_session
+from .types import Config, SessionStatus
 from .viewer import MessageViewer
 
 
@@ -528,6 +528,69 @@ def echo_test():
     for i in range(5):
         echo_static_line(f'Processing message {i}')
         time.sleep(1)
+
+
+def format_session_status(status: SessionStatus) -> str:
+    """Render session diagnostics, ending in the one action that would fix things."""
+    lines = [
+        f'Session file: {status.path}',
+        f'Telethon:     {status.telethon_version} (session schema v{status.supported_schema_version})',
+    ]
+
+    if not status.exists:
+        lines.append(color.yellow('File:         not found — no session yet'))
+        lines.append('\nRun any command (e.g. `telememo sync`) to log in and create it.')
+        return '\n'.join(lines)
+
+    schema = 'unknown (no version table)' if status.schema_version is None else f'v{status.schema_version}'
+    lines.append(f'File schema:  {schema}')
+
+    if not status.compatible:
+        lines.append(color.red('Compatible:   NO — session is newer than this Telethon'))
+        lines.append(
+            '\nUpgrade Telethon to read it (`uv sync` in the project, '
+            '`uv tool upgrade telememo` for a global install), or delete the session '
+            'file to log in again from scratch.'
+        )
+        return '\n'.join(lines)
+
+    lines.append(color.green('Compatible:   yes'))
+
+    if status.authorized is None:
+        lines.append('Authorized:   not checked')
+    elif status.authorized:
+        account = f'id={status.user_id}'
+        if status.username:
+            account += f' username=@{status.username}'
+        if status.phone:
+            account += f' phone={status.phone}'
+        lines.append(color.green('Authorized:   yes'))
+        lines.append(f'Account:      {account}')
+    else:
+        lines.append(color.red('Authorized:   NO — Telegram no longer honours this session'))
+        lines.append('\nRun `telememo sync` and log in again with the code Telegram sends you.')
+
+    return '\n'.join(lines)
+
+
+@cli.command()
+@click.pass_context
+def session(ctx):
+    """Show Telegram session diagnostics (file, schema version, login state).
+
+    Connects but never logs in, so it never triggers a login code. Use it to tell
+    a Telethon/session version mismatch apart from a revoked authorization.
+    """
+    app_config = ctx.obj['config']
+    session_path = ctx.obj['session_path']
+
+    async def run_session():
+        return await inspect_session(session_path, app_config.api_id, app_config.api_hash)
+
+    status = asyncio.run(run_session())
+    click.echo(format_session_status(status))
+    if not status.compatible or status.authorized is False:
+        ctx.exit(1)
 
 
 def main():
