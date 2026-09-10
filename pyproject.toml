@@ -60,7 +60,7 @@ Repository = "https://github.com/reorx/telememo"
 Issues = "https://github.com/reorx/telememo/issues"
 
 [project.scripts]
-telememo = "telememo.cli:cli"
+telememo = "telememo.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "telememo.__version__" }

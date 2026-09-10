@@ -10,6 +10,7 @@ import click
 
 from . import color, config, db
 from .core import Scraper, SyncResult
+from .telegram import SessionVersionError
 from .types import Config
 from .viewer import MessageViewer
 
@@ -529,5 +530,14 @@ def echo_test():
         time.sleep(1)
 
 
+def main():
+    """Console entry point: report known setup failures without a traceback."""
+    try:
+        cli()
+    except SessionVersionError as e:
+        click.echo(f'Error: {e}', err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
-    cli()
+    main()

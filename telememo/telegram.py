@@ -1,9 +1,14 @@
 """Telegram client wrapper using Telethon."""
 
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import AsyncIterator, List, Optional, Union
 
+import telethon
 from telethon import TelegramClient as TelethonClient
+from telethon.sessions.sqlite import CURRENT_VERSION as SESSION_CURRENT_VERSION
+from telethon.sessions.sqlite import EXTENSION as SESSION_EXTENSION
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetDiscussionMessageRequest, GetRepliesRequest
 from telethon.tl.types import Channel as TgChannel
@@ -13,6 +18,65 @@ from telethon.tl.types import MessageMediaWebPage, User, WebPage
 from .entity_cache import EntityNameCache
 from .types import ChannelInfo, CommentData, MessageData, WebPagePreview
 from .utils import _display_name_from_user, extract_forward_info
+
+
+class SessionVersionError(Exception):
+    """The session file was written by a Telethon newer than the one installed."""
+
+
+def resolve_session_path(session_name: str) -> Optional[Path]:
+    """Locate the sqlite file Telethon will open for ``session_name``.
+
+    Mirrors ``SQLiteSession``: the ``.session`` extension is appended when missing.
+    Returns None for in-memory sessions, which have no file to inspect.
+    """
+    if not session_name or session_name == ':memory:':
+        return None
+    if not session_name.endswith(SESSION_EXTENSION):
+        session_name += SESSION_EXTENSION
+    return Path(session_name)
+
+
+def read_session_version(path: Path) -> Optional[int]:
+    """Read the schema version Telethon stamped into a session file.
+
+    Returns None when there is nothing to compare against — the file is missing,
+    is not a sqlite database, or carries no ``version`` table. Telethon itself
+    then gets to decide what to make of it.
+    """
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True)
+    try:
+        row = conn.execute('select version from version').fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def check_session_compatibility(session_name: str) -> None:
+    """Fail early when the session file is too new for the installed Telethon.
+
+    Telethon only knows how to upgrade an older schema; handed a newer one it
+    skips the upgrade and unpacks ``select * from sessions`` into the column
+    count it expects, raising an opaque "too many values to unpack". Catching it
+    here turns that into an actionable message.
+    """
+    path = resolve_session_path(session_name)
+    if path is None:
+        return
+    version = read_session_version(path)
+    if version is None or version <= SESSION_CURRENT_VERSION:
+        return
+    raise SessionVersionError(
+        f'Session file "{path}" was written by a newer Telethon: it uses schema '
+        f'v{version}, but the installed Telethon {telethon.__version__} only understands '
+        f'v{SESSION_CURRENT_VERSION}. Upgrade Telethon (e.g. `uv sync` in the project, or '
+        f'`uv tool upgrade telememo` for a global install) — or delete the session file to '
+        f'log in again from scratch.'
+    )
 
 
 def extract_webpage_preview(message: TgMessage) -> Optional[WebPagePreview]:
@@ -211,9 +275,13 @@ class TelegramClient:
             api_id: Telegram API ID
             api_hash: Telegram API hash
             session_name: Session file name
+
+        Raises:
+            SessionVersionError: session file is newer than the installed Telethon
         """
         import platform
 
+        check_session_compatibility(session_name)
         self.client = TelethonClient(
             session_name,
             api_id,
