@@ -52,7 +52,7 @@ All in `telememo/`, one file per module.
 - Messages are keyed by `(channel, id)` and comments by `(parent_channel, parent_message_id, id)`. The models have no single primary key, so `instance.save()` does not work: write with `Model.update(...).where(...)`.
 - A new `Message` column must be added in all of: `db.Message`, `types.MessageData`, `db._message_row` (shared by insert and update), `telegram.convert_message_to_data`, and the row dicts in `service._message_data_to_row` and `viewer.load_messages`. `init_db` adds the column to existing databases; only `sync --full` fills it for existing rows.
 - An embedder can declare extension columns through `init_db(optional_fields=...)`. They are not in the Peewee models and telememo's writes must never touch them.
-- `save_message_smart` rewrites an existing row only when `edit_date` changed. `force=True` (used by `sync --full`) rewrites unconditionally.
+- `save_message_smart` rewrites an existing row only when `edit_date` changed. `force=True` (used by `sync --full` and `dump-messages`) rewrites unconditionally.
 - An album is several rows sharing `grouped_id`. The caption and the `replies` counter may sit on any row of the group.
 - Search is a substring `LIKE`; there is no full-text index.
 
