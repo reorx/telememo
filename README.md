@@ -1,14 +1,20 @@
 # Telememo
 
-Telememo is a Python CLI tool to dump Telegram channel messages to a local SQLite database for easy searching and archival.
+Telememo dumps Telegram channel messages and their comments to a local SQLite database for searching and archival. It works as a CLI, and as a Python library you can embed in a long-running application.
 
 ## Features
 
-- Dump all messages from Telegram channels to SQLite
-- Search messages by text content
-- Incremental sync to fetch only new messages
-- Built with modern Python async/await
-- Lightweight and easy to use
+- Dump a channel's full history, then keep it up to date with incremental sync
+- Comments from the channel's linked discussion group
+- Edits are picked up on sync; unchanged rows are left alone
+- Forward source, link preview and media dimensions stored with each message
+- Albums (several photos/videos sent together) shown as one message
+- Search messages and comments by text
+- Terminal viewer for browsing messages and comments
+- Session diagnostics that never trigger a login code
+- Library API with step-by-step login, history backfill, realtime subscription and on-demand media streaming
+
+Media files are not downloaded; only their type and dimensions are recorded.
 
 ## Requirements
 
@@ -78,15 +84,10 @@ PHONE = "+1234567890"
 
 # Default channel to use when -c/--channel-name is not specified
 DEFAULT_CHANNEL = "example_channel"
-
-# Optional: Configure multiple channels
-CHANNELS = {
-    "tech_news": {
-        "id": "@technews",
-        "description": "Technology news channel"
-    },
-}
 ```
+
+The configuration file is the only source of settings; environment variables are
+not read.
 
 ### Getting Telegram API Credentials
 
@@ -109,37 +110,86 @@ Your session will be saved locally in `~/.local/share/telememo/telethon.session`
 
 If commands start failing with an authentication or session error, run `telememo session` (see [Check session status](#check-session-status)) to find out which of the two causes it is.
 
+### Where data is stored
+
+| Path | Content |
+|---|---|
+| `~/.config/telememo/config.py` | Configuration |
+| `~/.local/share/telememo/telethon.session` | Telegram session, shared by all channels |
+| `~/.local/share/telememo/channels/<channel>/channel.db` | One SQLite database per channel |
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured.
+
 ## Usage
 
-### Dump channel messages
+Global options go **before** the subcommand:
 
-Dump all messages from a channel:
 ```bash
-telememo -c @channelname dump-messages
+telememo [-c CHANNEL] [--debug] [--reset-db] <command> [options]
 ```
 
-Or use the default channel from config:
-```bash
-telememo dump-messages
-```
+Without `-c`, `DEFAULT_CHANNEL` from the configuration is used.
 
-Dump with a limit:
-```bash
-telememo -c @channelname dump-messages --limit 100
-```
+| Command | What it does |
+|---|---|
+| `sync` | Fetch new messages and comments, pick up edits |
+| `dump-messages` | One-off dump of channel messages |
+| `dump-comments` | One-off dump of comments for stored messages |
+| `search` | Search stored messages or comments |
+| `info` | Show channel information and what is stored locally |
+| `viewer` | Browse messages and comments in the terminal |
+| `show-message-comments` | Fetch one message with its comments, without storing them |
+| `session` | Diagnose the Telegram session |
 
-### Sync new messages
+### Sync
 
-Fetch only new messages since last sync:
 ```bash
 telememo -c @channelname sync
 ```
 
-Full sync re-fetches all messages and overwrites all data columns of existing
-rows. If your database was created before columns like `webpage` (link preview)
-or `fwd_*` (forward source) were added, run it once to backfill them:
+`sync` is the command for everyday use. It fetches messages newer than the last
+sync. When there are none, it re-fetches the latest 100 messages instead, to
+pick up edits. A stored message is rewritten only when its edit date changed.
+Comments are fetched for new messages and for messages whose reply count
+changed.
+
+| Option | Effect |
+|---|---|
+| `--skip-comments` | Sync messages only |
+| `--limit N` | How many recent messages to re-fetch when there is nothing new (default 100) |
+| `--full` | Re-fetch the whole channel and overwrite all data columns of stored rows |
+
+Run `sync --full` once if your database was created before columns like
+`webpage` (link preview) or `fwd_*` (forward source) were added. The columns are
+added automatically when the database is opened, and the full sync fills them:
+
 ```bash
 telememo -c @channelname sync --full
+```
+
+### Dump
+
+Dump all messages of a channel, or only the latest N:
+```bash
+telememo -c @channelname dump-messages
+telememo -c @channelname dump-messages --limit 100
+```
+
+Dump comments for the messages already stored (the channel needs a linked
+discussion group). `--limit` restricts it to the latest N messages that have
+comments:
+```bash
+telememo -c @channelname dump-comments --limit 10
+```
+
+### Search
+
+Search is a substring match on the text.
+
+```bash
+telememo -c @channelname search "keyword" --limit 20
+telememo -c @channelname search "keyword" --comments           # search comments instead
+telememo -c @channelname search "keyword" --include-comments   # show matching messages with their comments
 ```
 
 ### Show channel information
@@ -148,12 +198,21 @@ telememo -c @channelname sync --full
 telememo -c @channelname info
 ```
 
-### Search messages
+### Viewer
 
-Search within a specific channel:
 ```bash
-telememo -c @channelname search "search term" --limit 20
+telememo -c @channelname viewer
 ```
+
+| Key | Action |
+|---|---|
+| `↑` `↓` or `j` `k` | Previous / next message |
+| `←` `→` or `h` `l` | Previous / next page |
+| `Tab` | Switch focus between the message list and the content |
+| `Esc` or `q` | Quit |
+
+The viewer reads from the local database but also connects to Telegram, so it
+needs a working session.
 
 ### Check session status
 
@@ -175,47 +234,85 @@ the same from the outside but have opposite fixes:
 
 Exits non-zero when either check fails, so it works in a health check.
 
+## Use as a library
+
+`telememo.service.TelegramService` is a facade for applications that stay
+connected: it logs in step by step instead of prompting, takes and returns the
+session as a string, and does not read `~/.config/telememo/config.py`.
+
+```python
+from telememo import db
+from telememo.service import TelegramService
+
+db.init_db('app.db')  # one database for all channels
+
+async def on_message(message):  # a DisplayMessage; called for new and edited messages
+    print(message.id, message.text)
+
+async with TelegramService(api_id, api_hash, session=saved_session) as service:
+    if not service.is_authorized:
+        code_hash = await service.send_code(phone)
+        result = await service.sign_in_code(phone, code, code_hash)
+        if result.status == '2fa_required':
+            result = await service.sign_in_2fa(password)
+        saved_session = result.session  # store it, encrypted, on your side
+
+    channel = await service.resolve_channel('@channelname')
+    async for message in service.backfill('@channelname', since_days=7):
+        ...
+    await service.subscribe([channel.id], on_message=on_message)
+```
+
+Also available: `get_media()` and `get_channel_photo()` stream media from
+Telegram on demand without writing to disk, and
+`db.init_db(path, optional_fields=...)` lets the application add its own columns
+to telememo's tables, which telememo never overwrites.
+
 ## Project Structure
 
 ```
 telememo/
 ├── telememo/
-│   ├── __init__.py
-│   ├── types.py      # Pydantic data models
-│   ├── db.py         # Database operations (Peewee ORM)
-│   ├── telegram.py   # Telegram client wrapper (Telethon)
-│   ├── core.py       # Business logic & scraper
-│   └── cli.py        # CLI commands (Click)
+│   ├── cli.py           # CLI commands (Click)
+│   ├── core.py          # Scraper: dump and sync for the CLI
+│   ├── service.py       # TelegramService: facade for embedding
+│   ├── telegram.py      # Telethon wrapper, message conversion, session checks
+│   ├── db.py            # Peewee models and database operations
+│   ├── types.py         # Pydantic data models
+│   ├── utils.py         # Forward info, album grouping
+│   ├── entity_cache.py  # Name cache for forward sources
+│   ├── viewer.py        # Terminal viewer (Rich)
+│   ├── config.py        # Configuration and paths
+│   └── color.py         # Terminal colors
+├── scripts/             # Debugging helpers
 ├── tests/
-│   ├── conftest.py
-│   └── test_integration.py
-├── pyproject.toml
-├── claude.md
-└── README.md
+├── kb/                  # Docs, known issues, backlog
+├── AGENTS.md            # Development guidelines
+└── pyproject.toml
 ```
 
 ## Development
 
 ### Running Tests
 
-Run integration tests:
 ```bash
-pytest tests/
+uv run pytest
 ```
 
-Run with verbose output:
-```bash
-pytest -v tests/
-```
+Telegram is mocked in these tests, so they need no credentials and no network.
 
-Run specific test:
+`tests/test_integration.py` talks to the real Telegram API with the credentials
+from your configuration file, and is skipped unless you opt in:
+
 ```bash
-pytest tests/test_integration.py::test_get_channel_info_and_messages -v
+ALLOW_LOGIN=1 uv run pytest tests/test_integration.py
 ```
 
 ### Development Guidelines
 
-See [claude.md](claude.md) for detailed development guidelines and architecture principles.
+See [AGENTS.md](AGENTS.md) for the module map and the rules to follow, and
+[kb/docs/message-pipeline.md](kb/docs/message-pipeline.md) (in Chinese) for how
+messages are stored, synced and displayed.
 
 ## Tech Stack
 
@@ -223,6 +320,7 @@ See [claude.md](claude.md) for detailed development guidelines and architecture 
 - **Peewee**: Lightweight SQLite ORM
 - **Click**: CLI framework
 - **Pydantic**: Data validation
+- **Rich** and **readchar**: Terminal viewer
 - **pytest**: Testing framework
 
 ## License

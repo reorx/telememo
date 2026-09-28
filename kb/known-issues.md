@@ -42,8 +42,3 @@
 
 - 记录：2026-09-28
 - 第二次因为连接标记已清而不生效，无实际影响，属笔误。
-
-## 文档：README 的项目结构、开发指引链接、测试命令已过时
-
-- 记录：2026-09-28
-- Project Structure 只列了 5 个模块；Development Guidelines 链接指向不存在的 `claude.md`；测试命令是 `pytest tests/` 而不是 `uv run pytest`，也没提集成测试需要 `ALLOW_LOGIN=1`。

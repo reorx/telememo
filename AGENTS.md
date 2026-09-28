@@ -77,4 +77,5 @@ All in `telememo/`, one file per module.
 ## Documentation
 
 - `kb/docs/message-pipeline.md` — the three message forms (raw, stored, displayed), album merging, where forward names come from, the three sync modes, what the embedding service adds. Read it before changing ingest, sync, or display grouping.
-- `kb/known-issues.md` — open defects and leftovers. Check it before relying on `dump-messages`, the viewer, or `--reset-db`.
+- `kb/known-issues.md` — open defects and leftovers. Check it before building on an existing CLI command or the viewer, and update it when you find or fix a problem.
+- `kb/todo.md` — the user's backlog of ideas.
