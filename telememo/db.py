@@ -274,7 +274,11 @@ def _message_row(message_data: MessageData) -> dict:
 
 
 def save_message(message_data: MessageData, dry_run: bool = False) -> Message | dict:
-    """Save or update a message.
+    """Save a message, overwriting all data columns if it already exists.
+
+    Unlike ``save_message_smart`` without ``force``, an existing row is rewritten
+    even when ``edit_date`` is unchanged, so counters (views/forwards/replies) and
+    columns added after the first ingest are refreshed.
 
     Args:
         message_data: Message data to save
@@ -283,27 +287,11 @@ def save_message(message_data: MessageData, dry_run: bool = False) -> Message | 
     Returns:
         Message object if dry_run=False, dict if dry_run=True
     """
-    data = _message_row(message_data)
-
     if dry_run:
-        return data
+        return _message_row(message_data)
 
-    message, created = Message.get_or_create(
-        channel=message_data.channel_id,
-        id=message_data.id,
-        defaults=data,
-    )
-    if not created:
-        print('update message', message)
-        # Update message if it already exists (e.g., edited message)
-        message.text = message_data.text
-        message.is_edited = message_data.is_edited
-        message.edit_date = message_data.edit_date
-        message.views = message_data.views
-        message.forwards = message_data.forwards
-        message.replies = message_data.replies
-        message.webpage = _webpage_json(message_data)
-        message.update()
+    existing = get_message_by_id(message_data.channel_id, message_data.id)
+    message, _ = save_message_smart(message_data, existing, force=True)
     return message
 
 
