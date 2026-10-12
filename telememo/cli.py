@@ -11,7 +11,7 @@ import click
 from . import color, config, db
 from .core import Scraper, SyncResult
 from .telegram import SessionVersionError, inspect_session
-from .types import Config, SessionStatus
+from .types import Config, SessionStatus, WebPagePreview
 from .viewer import MessageViewer
 
 
@@ -349,8 +349,13 @@ def info(ctx, init_data):
     is_flag=True,
     help='When searching messages, also show their comments',
 )
+@click.option(
+    '--include-webpage',
+    is_flag=True,
+    help='Also search stored link preview titles, descriptions, site names, authors and URLs',
+)
 @click.pass_context
-def search(ctx, query: str, limit: int, comments: bool, include_comments: bool):
+def search(ctx, query: str, limit: int, comments: bool, include_comments: bool, include_webpage: bool):
     """Search messages and/or comments by text content.
 
     QUERY is the search term to look for.
@@ -360,8 +365,10 @@ def search(ctx, query: str, limit: int, comments: bool, include_comments: bool):
       telememo search "keyword"                       # Search in messages (default)
       telememo search "keyword" --comments            # Search in comments only
       telememo search "keyword" --include-comments    # Show matching messages with their comments
+      telememo search "keyword" --include-webpage     # Also search and show stored link previews
     """
-    config = ctx.obj['config']
+    if comments and include_webpage:
+        raise click.UsageError('--include-webpage cannot be used with --comments')
 
     channel_name = ctx.obj.get('channel_name')
 
@@ -381,7 +388,7 @@ def search(ctx, query: str, limit: int, comments: bool, include_comments: bool):
     if comments:
         comment_results = db.search_comments(query, channel_id=channel_id, limit=limit)
     else:
-        message_results = db.search_messages(query, channel_id=channel_id, limit=limit)
+        message_results = db.search_messages(query, channel_id=channel_id, limit=limit, include_webpage=include_webpage)
 
     # Display results
     if not message_results and not comment_results:
@@ -403,6 +410,18 @@ def search(ctx, query: str, limit: int, comments: bool, include_comments: bool):
             if len(text) > 200:
                 text = text[:200] + '...'
             click.echo(f'  {text}')
+
+            if include_webpage and msg.webpage:
+                preview = WebPagePreview.model_validate_json(msg.webpage)
+                click.echo('  Webpage:')
+                for field, label in (
+                    ('title', 'Title'), ('description', 'Description'),
+                    ('site_name', 'Site'), ('author', 'Author'),
+                    ('url', 'URL'), ('display_url', 'Display URL'),
+                ):
+                    value = getattr(preview, field)
+                    if value:
+                        click.echo(f'    {label}: {value}')
 
             if msg.views:
                 click.echo(f'  Views: {msg.views}')

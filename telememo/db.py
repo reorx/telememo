@@ -14,6 +14,7 @@ from peewee import (
     Model,
     SqliteDatabase,
     TextField,
+    fn,
 )
 
 from .types import ChannelInfo, CommentData, MessageData
@@ -339,9 +340,15 @@ def get_channel_by_username(username: str) -> Optional[Channel]:
         return None
 
 
-def search_messages(query: str, channel_id: Optional[int] = None, limit: int = 50) -> List[Message]:
-    """Search messages by text content."""
-    q = Message.select().where(Message.text.contains(query))
+def search_messages(
+    query: str, channel_id: Optional[int] = None, limit: int = 50, *, include_webpage: bool = False
+) -> List[Message]:
+    """Search message text, optionally including stored link preview text and URLs."""
+    matches = Message.text.contains(query)
+    if include_webpage:
+        for field in ('title', 'description', 'site_name', 'author', 'url', 'display_url'):
+            matches |= fn.json_extract(Message.webpage, f'$.{field}').contains(query)
+    q = Message.select().where(matches)
     if channel_id:
         q = q.where(Message.channel == channel_id)
     return list(q.order_by(Message.date.desc()).limit(limit))

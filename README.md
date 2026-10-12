@@ -184,12 +184,16 @@ telememo -c @channelname dump-comments --limit 10
 
 ### Search
 
-Search is a substring match on the text.
+Search is a substring match on the message text. Add `--include-webpage` to also
+match the stored link preview's title, description, site name, author and URLs;
+the results then show the preview alongside the message. This searches Telegram's
+saved preview, not the full linked page, and needs no network access.
 
 ```bash
 telememo -c @channelname search "keyword" --limit 20
 telememo -c @channelname search "keyword" --comments           # search comments instead
 telememo -c @channelname search "keyword" --include-comments   # show matching messages with their comments
+telememo -c @channelname search "keyword" --include-webpage    # also search and show link previews
 ```
 
 ### Show channel information
